@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OT EWS</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --green: #16a34a;
+      --yellow: #eab308;
+      --red: #dc2626;
+      --gray: #64748b;
+      --blue: #2563eb;
+    }
+    body { font-family: Arial, sans-serif; margin: 0; background: var(--bg); color: var(--text); }
+    header { padding: 12px 16px; background: #020617; display: flex; align-items: center; justify-content: space-between; }
+    header h1 { margin: 0; font-size: 18px; }
+    nav button { margin-right: 8px; background: var(--panel); color: var(--text); border: 1px solid #334155; padding: 8px 10px; cursor: pointer; }
+    nav button.active { background: var(--blue); border-color: var(--blue); }
+    main { padding: 16px; }
+    section { display: none; }
+    section.active { display: block; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(320px, 1fr)); gap: 12px; }
+    .card { background: var(--panel); border: 1px solid #334155; border-left-width: 8px; padding: 10px; }
+    .state-gray { border-left-color: var(--gray); }
+    .state-green { border-left-color: var(--green); }
+    .state-yellow { border-left-color: var(--yellow); }
+    .state-red { border-left-color: var(--red); }
+    .muted { color: var(--muted); }
+    .line { margin: 4px 0; }
+    input, select, button, textarea { background: #0b1220; color: var(--text); border: 1px solid #334155; padding: 6px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; border-bottom: 1px solid #334155; padding: 6px; font-size: 13px; }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    .pill { border-radius: 12px; padding: 2px 8px; font-size: 12px; }
+    .sev-warning { background: #854d0e; }
+    .sev-alarm { background: #7f1d1d; }
+    pre { background: #0b1220; border: 1px solid #334155; padding: 8px; overflow: auto; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>OT Early Warning System</h1>
+    <div id="statusBar" class="muted">Caricamento...</div>
+  </header>
+
+  <main>
+    <nav>
+      <button class="tab active" data-target="dashboard">Dashboard</button>
+      <button class="tab" data-target="events">Eventi</button>
+      <button class="tab" data-target="state">Stato</button>
+      <button class="tab" data-target="config">Configurazione</button>
+    </nav>
+
+    <section id="dashboard" class="active">
+      <h2>Dashboard Protocolli OT</h2>
+      <div id="cards" class="grid"></div>
+    </section>
+
+    <section id="events">
+      <h2>Eventi</h2>
+      <div class="row">
+        <label>Severity
+          <select id="filterSeverity">
+            <option value="">Tutte</option>
+            <option value="WARNING">WARNING</option>
+            <option value="ALARM">ALARM</option>
+          </select>
+        </label>
+        <label>Protocollo <input id="filterProtocol" placeholder="es. Profinet" /></label>
+        <label>Host <input id="filterHost" placeholder="IP o MAC" /></label>
+        <label>Ultimi secondi <input id="filterSince" type="number" min="1" value="3600" /></label>
+        <button id="reloadEvents">Ricarica</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Severity</th>
+            <th>Protocollo</th>
+            <th>Src</th>
+            <th>Dst</th>
+            <th>Port/EtherType</th>
+            <th>Occorrenze</th>
+            <th>Descrizione</th>
+          </tr>
+        </thead>
+        <tbody id="eventsTable"></tbody>
+      </table>
+    </section>
+
+    <section id="state">
+      <h2>Stato Sistema</h2>
+      <div class="row">
+        <span>Stato attuale: <strong id="currentState">-</strong></span>
+        <button id="btnOff">Imposta SPENTO (OFF)</button>
+        <button id="btnOn">Imposta ACCESO (ON)</button>
+      </div>
+      <h3>Baseline protocolli</h3>
+      <div id="baselineProtocols" class="muted">-</div>
+    </section>
+
+    <section id="config">
+      <h2>Configurazione</h2>
+      <div class="row">
+        <label>Dedup seconds <input id="dedupInput" type="number" min="1" max="3600" /></label>
+        <button id="saveConfig">Salva config runtime</button>
+      </div>
+      <pre id="configView"></pre>
+      <h3>Baseline export/import</h3>
+      <div class="row">
+        <button id="exportBaseline">Export baseline (JSON)</button>
+      </div>
+      <textarea id="importPayload" rows="10" style="width:100%;" placeholder="Incolla qui JSON baseline"></textarea>
+      <div class="row">
+        <button id="importBaseline">Import baseline</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const tabs = document.querySelectorAll('.tab');
+    tabs.forEach(btn => btn.addEventListener('click', () => {
+      tabs.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.querySelectorAll('section').forEach(s => s.classList.remove('active'));
+      document.getElementById(btn.dataset.target).classList.add('active');
+    }));
+
+    async function api(url, options = {}) {
+      const res = await fetch(url, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    function ts(t) {
+      if (!t) return '-';
+      return new Date(t * 1000).toLocaleString();
+    }
+
+    function renderCards(cards) {
+      const host = document.getElementById('cards');
+      host.innerHTML = '';
+      for (const card of cards) {
+        const eventsHtml = card.events.map(e => `<div class="line">${ts(e.last_seen)} <span class="pill ${e.severity === 'ALARM' ? 'sev-alarm' : 'sev-warning'}">${e.severity}</span> ${e.description}</div>`).join('');
+        const addrHtml = card.addresses.map(a => `<div class="line">${a.address} (${a.count})</div>`).join('') || '<div class="line muted">Nessun indirizzo</div>';
+        const el = document.createElement('div');
+        el.className = `card state-${card.color}`;
+        el.innerHTML = `
+          <h3>${card.protocol}</h3>
+          <div class="line">Pacchetti: <strong>${card.packets}</strong></div>
+          <div class="line">PPS: <strong>${card.pps}</strong></div>
+          <div class="line">BPS: <strong>${card.bps}</strong></div>
+          <div class="line muted">Indirizzi rilevati</div>
+          ${addrHtml}
+          <div class="line muted" style="margin-top:8px;">Ultimi eventi</div>
+          ${eventsHtml || '<div class="line muted">Nessun evento</div>'}
+        `;
+        host.appendChild(el);
+      }
+    }
+
+    async function refreshStatusAndMetrics() {
+      const [status, metrics] = await Promise.all([api('/api/status'), api('/api/metrics')]);
+      document.getElementById('statusBar').textContent = `State=${status.state} Mode=${status.mode} eth0=${status.interfaces.eth0} eth1=${status.interfaces.eth1 || 'disabled'} web=${status.web.port}`;
+      document.getElementById('currentState').textContent = status.state;
+      document.getElementById('baselineProtocols').textContent = metrics.baseline_protocols.join(', ') || 'Nessuno';
+      renderCards(metrics.cards);
+    }
+
+    async function refreshEvents() {
+      const severity = document.getElementById('filterSeverity').value;
+      const protocol = document.getElementById('filterProtocol').value.trim();
+      const host = document.getElementById('filterHost').value.trim();
+      const since = document.getElementById('filterSince').value;
+      const params = new URLSearchParams();
+      if (severity) params.append('severity', severity);
+      if (protocol) params.append('protocol', protocol);
+      if (host) params.append('host', host);
+      if (since) params.append('since_seconds', since);
+      params.append('limit', '300');
+      const data = await api(`/api/events?${params.toString()}`);
+      const tbody = document.getElementById('eventsTable');
+      tbody.innerHTML = '';
+      for (const e of data.items) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${ts(e.last_seen)}</td>
+          <td>${e.severity}</td>
+          <td>${e.protocol || '-'}</td>
+          <td>${e.src_ip || e.src_mac || '-'}</td>
+          <td>${e.dst_ip || e.dst_mac || '-'}</td>
+          <td>${e.port || '-'} / ${e.ethertype || '-'}</td>
+          <td>${e.occurrences}</td>
+          <td>${e.description}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    async function refreshConfig() {
+      const cfg = await api('/api/config');
+      document.getElementById('configView').textContent = JSON.stringify(cfg, null, 2);
+      document.getElementById('dedupInput').value = cfg.dedup_window_seconds;
+    }
+
+    document.getElementById('reloadEvents').addEventListener('click', refreshEvents);
+    document.getElementById('btnOff').addEventListener('click', async () => {
+      await api('/api/state', { method: 'POST', body: JSON.stringify({ state: 'OFF' }) });
+      await refreshStatusAndMetrics();
+    });
+    document.getElementById('btnOn').addEventListener('click', async () => {
+      await api('/api/state', { method: 'POST', body: JSON.stringify({ state: 'ON' }) });
+      await refreshStatusAndMetrics();
+    });
+    document.getElementById('saveConfig').addEventListener('click', async () => {
+      const dedup = Number(document.getElementById('dedupInput').value);
+      await api('/api/config', { method: 'POST', body: JSON.stringify({ dedup_window_seconds: dedup }) });
+      await refreshConfig();
+    });
+    document.getElementById('exportBaseline').addEventListener('click', async () => {
+      const data = await api('/api/baseline/export', { method: 'POST' });
+      document.getElementById('importPayload').value = JSON.stringify(data, null, 2);
+    });
+    document.getElementById('importBaseline').addEventListener('click', async () => {
+      const payload = JSON.parse(document.getElementById('importPayload').value || '{}');
+      await api('/api/baseline/import', { method: 'POST', body: JSON.stringify(payload) });
+      await refreshStatusAndMetrics();
+      await refreshConfig();
+    });
+
+    async function boot() {
+      try {
+        await Promise.all([refreshStatusAndMetrics(), refreshEvents(), refreshConfig()]);
+      } catch (e) {
+        document.getElementById('statusBar').textContent = `Errore: ${e.message}`;
+      }
+    }
+
+    setInterval(refreshStatusAndMetrics, 5000);
+    setInterval(refreshEvents, 7000);
+    boot();
+  </script>
+</body>
+</html>

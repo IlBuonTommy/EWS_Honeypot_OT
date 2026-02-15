@@ -1,0 +1,30 @@
+services:
+  ews:
+    build: .
+    container_name: ot-ews-light
+    restart: unless-stopped
+    cap_add:
+      - NET_RAW
+    environment:
+      EWS_MODE: light
+      EWS_WEB_PORT: ${EWS_WEB_PORT:-8080}
+      EWS_ETH0_IFACE: eth0
+      EWS_DEDUP_WINDOW_SECONDS: ${EWS_DEDUP_WINDOW_SECONDS:-30}
+      EWS_DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    ports:
+      - "${EWS_WEB_PORT:-8080}:${EWS_WEB_PORT:-8080}"
+    networks:
+      ot_mgmt:
+        ipv4_address: ${EWS_ETH0_IP}
+
+networks:
+  ot_mgmt:
+    driver: macvlan
+    driver_opts:
+      parent: ${OT_MGMT_PARENT_IFACE}
+    ipam:
+      config:
+        - subnet: ${OT_MGMT_SUBNET}
+          gateway: ${OT_MGMT_GATEWAY}
