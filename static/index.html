@@ -24,7 +24,7 @@
     main { padding: 16px; }
     section { display: none; }
     section.active { display: block; }
-    .grid { display: grid; grid-template-columns: repeat(2, minmax(320px, 1fr)); gap: 12px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
     .card { background: var(--panel); border: 1px solid #334155; border-left-width: 8px; padding: 10px; }
     .state-gray { border-left-color: var(--gray); }
     .state-green { border-left-color: var(--green); }
@@ -40,6 +40,14 @@
     .sev-warning { background: #854d0e; }
     .sev-alarm { background: #7f1d1d; }
     pre { background: #0b1220; border: 1px solid #334155; padding: 8px; overflow: auto; }
+    .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-left: 6px; }
+    .badge-green { background: #166534; }
+    .badge-red { background: #7f1d1d; }
+    .badge-blue { background: #1e3a5f; }
+    #authRow { background: #1a1a2e; padding: 8px 16px; border-bottom: 1px solid #334155; display: flex; align-items: center; gap: 10px; font-size: 13px; }
+    #authRow input { width: 300px; }
+    .stats-bar { display: flex; gap: 20px; margin-bottom: 12px; flex-wrap: wrap; }
+    .stat-chip { background: var(--panel); border: 1px solid #334155; padding: 6px 12px; font-size: 13px; }
   </style>
 </head>
 <body>
@@ -47,6 +55,11 @@
     <h1>OT Early Warning System</h1>
     <div id="statusBar" class="muted">Caricamento...</div>
   </header>
+
+  <div id="authRow">
+    <label>API Key: <input id="apiKeyInput" type="password" placeholder="Inserisci API key (se configurata)" /></label>
+    <span id="authStatus" class="muted">Non verificata</span>
+  </div>
 
   <main>
     <nav>
@@ -58,6 +71,7 @@
 
     <section id="dashboard" class="active">
       <h2>Dashboard Protocolli OT</h2>
+      <div id="dashStats" class="stats-bar"></div>
       <div id="cards" class="grid"></div>
     </section>
 
@@ -123,6 +137,20 @@
   </main>
 
   <script>
+    // ── XSS-safe text escaping ──────────────────────────────────────
+    function esc(s) {
+      if (s === null || s === undefined) return '';
+      const d = document.createElement('div');
+      d.textContent = String(s);
+      return d.innerHTML;
+    }
+
+    // ── API key helpers ─────────────────────────────────────────────
+    function getApiKey() {
+      return (document.getElementById('apiKeyInput').value || '').trim();
+    }
+
+    // ── Tab navigation ──────────────────────────────────────────────
     const tabs = document.querySelectorAll('.tab');
     tabs.forEach(btn => btn.addEventListener('click', () => {
       tabs.forEach(b => b.classList.remove('active'));
@@ -132,10 +160,10 @@
     }));
 
     async function api(url, options = {}) {
-      const res = await fetch(url, {
-        headers: { 'Content-Type': 'application/json' },
-        ...options
-      });
+      const headers = { 'Content-Type': 'application/json' };
+      const key = getApiKey();
+      if (key) headers['X-Api-Key'] = key;
+      const res = await fetch(url, { headers, ...options });
       if (!res.ok) throw new Error(await res.text());
       return res.json();
     }
@@ -145,36 +173,125 @@
       return new Date(t * 1000).toLocaleString();
     }
 
+    // ── Dashboard cards (XSS-safe) ──────────────────────────────────
     function renderCards(cards) {
       const host = document.getElementById('cards');
       host.innerHTML = '';
       for (const card of cards) {
-        const eventsHtml = card.events.map(e => `<div class="line">${ts(e.last_seen)} <span class="pill ${e.severity === 'ALARM' ? 'sev-alarm' : 'sev-warning'}">${e.severity}</span> ${e.description}</div>`).join('');
-        const addrHtml = card.addresses.map(a => `<div class="line">${a.address} (${a.count})</div>`).join('') || '<div class="line muted">Nessun indirizzo</div>';
         const el = document.createElement('div');
-        el.className = `card state-${card.color}`;
-        el.innerHTML = `
-          <h3>${card.protocol}</h3>
-          <div class="line">Pacchetti: <strong>${card.packets}</strong></div>
-          <div class="line">PPS: <strong>${card.pps}</strong></div>
-          <div class="line">BPS: <strong>${card.bps}</strong></div>
-          <div class="line muted">Indirizzi rilevati</div>
-          ${addrHtml}
-          <div class="line muted" style="margin-top:8px;">Ultimi eventi</div>
-          ${eventsHtml || '<div class="line muted">Nessun evento</div>'}
-        `;
+        el.className = 'card state-' + esc(card.color);
+
+        // Header
+        const h3 = document.createElement('h3');
+        h3.textContent = card.protocol;
+        el.appendChild(h3);
+
+        // Stats lines
+        const lines = [
+          ['Pacchetti', card.packets],
+          ['PPS', card.pps],
+          ['BPS', card.bps],
+        ];
+        for (const [label, value] of lines) {
+          const d = document.createElement('div');
+          d.className = 'line';
+          d.innerHTML = esc(label) + ': <strong>' + esc(value) + '</strong>';
+          el.appendChild(d);
+        }
+
+        // Addresses
+        const addrLabel = document.createElement('div');
+        addrLabel.className = 'line muted';
+        addrLabel.textContent = 'Indirizzi rilevati';
+        addrLabel.style.marginTop = '8px';
+        el.appendChild(addrLabel);
+        if (card.addresses && card.addresses.length > 0) {
+          for (const a of card.addresses) {
+            const d = document.createElement('div');
+            d.className = 'line';
+            d.textContent = a.address + ' (' + a.count + ')';
+            el.appendChild(d);
+          }
+        } else {
+          const d = document.createElement('div');
+          d.className = 'line muted';
+          d.textContent = 'Nessun indirizzo';
+          el.appendChild(d);
+        }
+
+        // Events
+        const evtLabel = document.createElement('div');
+        evtLabel.className = 'line muted';
+        evtLabel.textContent = 'Ultimi eventi';
+        evtLabel.style.marginTop = '8px';
+        el.appendChild(evtLabel);
+        if (card.events && card.events.length > 0) {
+          for (const e of card.events) {
+            const d = document.createElement('div');
+            d.className = 'line';
+            const pill = document.createElement('span');
+            pill.className = 'pill ' + (e.severity === 'ALARM' ? 'sev-alarm' : 'sev-warning');
+            pill.textContent = e.severity;
+            d.textContent = ts(e.last_seen) + ' ';
+            d.appendChild(pill);
+            d.appendChild(document.createTextNode(' ' + (e.description || '')));
+            el.appendChild(d);
+          }
+        } else {
+          const d = document.createElement('div');
+          d.className = 'line muted';
+          d.textContent = 'Nessun evento';
+          el.appendChild(d);
+        }
+
         host.appendChild(el);
       }
     }
 
     async function refreshStatusAndMetrics() {
       const [status, metrics] = await Promise.all([api('/api/status'), api('/api/metrics')]);
-      document.getElementById('statusBar').textContent = `State=${status.state} Mode=${status.mode} eth0=${status.interfaces.eth0} eth1=${status.interfaces.eth1 || 'disabled'} web=${status.web.port}`;
+
+      // Status bar
+      const parts = [
+        'State=' + esc(status.state),
+        'Mode=' + esc(status.mode),
+        'eth0=' + esc(status.interfaces.eth0),
+      ];
+      if (status.interfaces.eth1) parts.push('eth1=' + esc(status.interfaces.eth1));
+      parts.push('web=' + status.web.port);
+      if (status.auth_enabled) parts.push('🔒 Auth');
+      if (status.webhook_configured) parts.push('📡 Webhook');
+      document.getElementById('statusBar').innerHTML = parts.join(' | ');
+
+      // Auth status display
+      const authEl = document.getElementById('authStatus');
+      if (status.auth_enabled) {
+        authEl.innerHTML = '<span class="badge badge-green">Auth attiva</span>';
+      } else {
+        authEl.innerHTML = '<span class="badge badge-red">Auth disattivata</span>';
+      }
+
       document.getElementById('currentState').textContent = status.state;
       document.getElementById('baselineProtocols').textContent = metrics.baseline_protocols.join(', ') || 'Nessuno';
+
+      // Stats bar
+      const statsBar = document.getElementById('dashStats');
+      const totalCards = metrics.cards.length;
+      const activeCards = metrics.cards.filter(c => c.packets > 0).length;
+      const alarmCards = metrics.cards.filter(c => c.color === 'red').length;
+      const warnCards = metrics.cards.filter(c => c.color === 'yellow').length;
+      statsBar.innerHTML = [
+        '<div class="stat-chip">Protocolli monitorati: <strong>' + totalCards + '</strong></div>',
+        '<div class="stat-chip">Con traffico: <strong>' + activeCards + '</strong></div>',
+        '<div class="stat-chip" style="border-color:var(--red)">ALARM: <strong>' + alarmCards + '</strong></div>',
+        '<div class="stat-chip" style="border-color:var(--yellow)">WARNING: <strong>' + warnCards + '</strong></div>',
+        '<div class="stat-chip">Baseline: <strong>' + metrics.baseline_protocols.length + '</strong> proto</div>',
+      ].join('');
+
       renderCards(metrics.cards);
     }
 
+    // ── Events table (XSS-safe) ─────────────────────────────────────
     async function refreshEvents() {
       const severity = document.getElementById('filterSeverity').value;
       const protocol = document.getElementById('filterProtocol').value.trim();
@@ -186,21 +303,30 @@
       if (host) params.append('host', host);
       if (since) params.append('since_seconds', since);
       params.append('limit', '300');
-      const data = await api(`/api/events?${params.toString()}`);
+      const data = await api('/api/events?' + params.toString());
       const tbody = document.getElementById('eventsTable');
       tbody.innerHTML = '';
       for (const e of data.items) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td>${ts(e.last_seen)}</td>
-          <td>${e.severity}</td>
-          <td>${e.protocol || '-'}</td>
-          <td>${e.src_ip || e.src_mac || '-'}</td>
-          <td>${e.dst_ip || e.dst_mac || '-'}</td>
-          <td>${e.port || '-'} / ${e.ethertype || '-'}</td>
-          <td>${e.occurrences}</td>
-          <td>${e.description}</td>
-        `;
+        const cells = [
+          ts(e.last_seen),
+          e.severity,
+          e.protocol || '-',
+          e.src_ip || e.src_mac || '-',
+          e.dst_ip || e.dst_mac || '-',
+          (e.port || '-') + ' / ' + (e.ethertype || '-'),
+          e.occurrences,
+          e.description,
+        ];
+        for (const val of cells) {
+          const td = document.createElement('td');
+          td.textContent = val != null ? String(val) : '-';
+          tr.appendChild(td);
+        }
+        // Highlight ALARM rows
+        if (e.severity === 'ALARM') {
+          tr.style.background = '#1c0a0a';
+        }
         tbody.appendChild(tr);
       }
     }
@@ -240,7 +366,7 @@
       try {
         await Promise.all([refreshStatusAndMetrics(), refreshEvents(), refreshConfig()]);
       } catch (e) {
-        document.getElementById('statusBar').textContent = `Errore: ${e.message}`;
+        document.getElementById('statusBar').textContent = 'Errore: ' + e.message;
       }
     }
 

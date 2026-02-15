@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 import json
 import os
 import sqlite3
@@ -17,10 +18,28 @@ class Storage:
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._last_metric_snapshot: dict[str, tuple[int, int, float]] = {}
+
+        # ── Rate limiter state ───────────────────────────────────────
+        self._event_count_window: int = 0
+        self._event_window_start: float = time.time()
+        self._event_rate_limit: int = 0  # set by caller
+
+        # ── Port scan detector state ─────────────────────────────────
+        # {src_ip: deque of (timestamp, dst_port)}
+        self._scan_tracker: dict[str, collections.deque] = {}
+        self._scan_alerted: set[str] = set()  # IPs already alerted in current window
+
+        # ── ARP cache for spoofing detection ─────────────────────────
+        # {ip: mac} learned from baseline or ARP traffic
+        self._arp_cache: dict[str, str] = {}
+
         self._init_schema()
 
     def _init_schema(self) -> None:
         with self._conn:
+            # Enable WAL mode for better read/write concurrency
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS settings (
@@ -83,11 +102,109 @@ class Storage:
                 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_events_sev ON events(severity);
                 CREATE INDEX IF NOT EXISTS idx_events_proto ON events(protocol);
+                CREATE INDEX IF NOT EXISTS idx_events_dedup ON events(dedup_key, last_seen DESC);
+
+                -- ARP baseline table (IP ↔ MAC mapping learned in OFF mode)
+                CREATE TABLE IF NOT EXISTS baseline_arp (
+                    ip TEXT PRIMARY KEY,
+                    mac TEXT NOT NULL,
+                    first_seen REAL NOT NULL,
+                    last_seen REAL NOT NULL
+                );
                 """
             )
 
         if self.get_setting("system_state") is None:
             self.set_setting("system_state", "OFF")
+
+        # Preload ARP cache from baseline
+        self._load_arp_cache()
+
+    def _load_arp_cache(self) -> None:
+        with self._lock:
+            rows = self._conn.execute("SELECT ip, mac FROM baseline_arp").fetchall()
+        self._arp_cache = {row["ip"]: row["mac"] for row in rows}
+
+    # ── Rate limiter ─────────────────────────────────────────────────
+
+    def _check_rate_limit(self) -> bool:
+        """Return True if event should be allowed, False if rate-limited."""
+        if self._event_rate_limit <= 0:
+            return True
+        now = time.time()
+        if now - self._event_window_start >= 1.0:
+            self._event_window_start = now
+            self._event_count_window = 0
+        self._event_count_window += 1
+        return self._event_count_window <= self._event_rate_limit
+
+    # ── Port scan detection ──────────────────────────────────────────
+
+    def track_port_contact(self, src_ip: str, dst_port: int | None,
+                           threshold_ports: int, threshold_seconds: int) -> bool:
+        """Track a port contact from src_ip. Returns True if scan threshold exceeded."""
+        if not src_ip or dst_port is None:
+            return False
+
+        now = time.time()
+        cutoff = now - threshold_seconds
+
+        if src_ip not in self._scan_tracker:
+            self._scan_tracker[src_ip] = collections.deque()
+
+        q = self._scan_tracker[src_ip]
+        q.append((now, dst_port))
+
+        # Purge old entries
+        while q and q[0][0] < cutoff:
+            q.popleft()
+
+        # Count distinct ports
+        distinct_ports = {port for _, port in q}
+        if len(distinct_ports) >= threshold_ports:
+            if src_ip not in self._scan_alerted:
+                self._scan_alerted.add(src_ip)
+                return True
+        else:
+            self._scan_alerted.discard(src_ip)
+
+        return False
+
+    # ── ARP spoofing detection ───────────────────────────────────────
+
+    def upsert_baseline_arp(self, ip: str, mac: str) -> None:
+        """Learn IP↔MAC mapping during baseline (OFF mode)."""
+        if not ip or not mac:
+            return
+        now = time.time()
+        mac = mac.lower()
+        self._arp_cache[ip] = mac
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO baseline_arp(ip, mac, first_seen, last_seen)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(ip) DO UPDATE SET mac=excluded.mac, last_seen=excluded.last_seen
+                """,
+                (ip, mac, now, now),
+            )
+
+    def check_arp_consistency(self, ip: str, mac: str) -> str | None:
+        """Return alert description if IP↔MAC changed vs baseline. None if OK."""
+        if not ip or not mac:
+            return None
+        mac = mac.lower()
+        known_mac = self._arp_cache.get(ip)
+        if known_mac is None:
+            return None  # IP not in baseline, handled by new-host detection
+        if known_mac != mac:
+            return (
+                f"ARP spoofing sospetto: IP {ip} associato a MAC {mac}, "
+                f"baseline atteso {known_mac}"
+            )
+        return None
+
+    # ── Core CRUD ────────────────────────────────────────────────────
 
     def close(self) -> None:
         with self._lock:
@@ -190,6 +307,10 @@ class Storage:
                 )
 
     def record_event(self, event: dict, dedup_window_seconds: int) -> None:
+        # Rate limiter check
+        if not self._check_rate_limit():
+            return
+
         now = time.time()
         dedup_key = event.get("dedup_key")
         with self._lock, self._conn:

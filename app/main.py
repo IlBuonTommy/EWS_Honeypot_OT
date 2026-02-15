@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
+import json
 import logging
 import os
 import socket
 import struct
+import sys
 import threading
 import time
+import urllib.request
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -26,6 +28,7 @@ LOGGER = logging.getLogger("ews")
 
 settings = Settings.from_env()
 storage = Storage(settings.data_dir)
+storage._event_rate_limit = settings.event_rate_limit  # wire rate limiter
 app = FastAPI(title="OT EWS Honeypot")
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -37,7 +40,12 @@ eth1_sniffer: RawSnifferThread | None = None
 port_traps: HoneypotPortTraps | None = None
 
 
+# ── Platform-agnostic network helpers ────────────────────────────────
+
 def _if_mac_address(ifname: str) -> str | None:
+    if sys.platform != "linux":
+        return None
+    import fcntl
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         mac = fcntl.ioctl(sock.fileno(), 0x8927, struct.pack("256s", ifname.encode("utf-8")[:15]))[18:24]
@@ -49,6 +57,9 @@ def _if_mac_address(ifname: str) -> str | None:
 
 
 def _if_ip_address(ifname: str) -> str | None:
+    if sys.platform != "linux":
+        return None
+    import fcntl
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         result = fcntl.ioctl(sock.fileno(), 0x8915, struct.pack("256s", ifname.encode("utf-8")[:15]))
@@ -58,6 +69,42 @@ def _if_ip_address(ifname: str) -> str | None:
     finally:
         sock.close()
 
+
+# ── API key authentication dependency ────────────────────────────────
+
+def verify_api_key(x_api_key: str = Header(default="")) -> None:
+    """Enforce API key on mutating endpoints when EWS_API_KEY is configured."""
+    expected = settings.api_key
+    if not expected:
+        return  # no key configured → dev/test mode, allow all
+    if x_api_key != expected:
+        raise HTTPException(status_code=403, detail="API key non valida o mancante")
+
+
+# ── Webhook alerting ─────────────────────────────────────────────────
+
+def _send_webhook(event: dict) -> None:
+    """Fire-and-forget webhook notification for ALARM-level events."""
+    url = settings.webhook_url
+    if not url:
+        return
+    try:
+        payload = json.dumps({
+            "source": "OT-EWS",
+            "timestamp": time.time(),
+            "event": event,
+        }).encode()
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as exc:
+        LOGGER.warning("Webhook alert fallito verso %s: %s", url, exc)
+
+
+# ── Helpers ──────────────────────────────────────────────────────────
 
 def _normalize_host_list(packet: dict) -> list[tuple[str, str]]:
     hosts: list[tuple[str, str]] = []
@@ -89,7 +136,12 @@ def _event_from_packet(severity: str, description: str, packet: dict, protocol: 
 
 def record_event(event: dict) -> None:
     storage.record_event(event, settings.dedup_window_seconds)
+    # Send webhook for ALARM severity
+    if event.get("severity") == "ALARM":
+        threading.Thread(target=_send_webhook, args=(event,), daemon=True).start()
 
+
+# ── eth0 handler (honeypot interface — any contact is suspicious) ────
 
 def handle_eth0_packet(packet: dict) -> None:
     classification = classify_packet(packet)
@@ -113,19 +165,48 @@ def handle_eth0_packet(packet: dict) -> None:
     if not directed_to_ews:
         return
 
+    # Exclude web UI traffic
     if l4_proto == "tcp" and dst_port == settings.web_port:
         return
 
     protocol = next(iter(classification.protocols), UNKNOWN)
+
+    # ── SYN scan detection (TCP SYN without ACK) ─────────────────
+    tcp_flags = packet.get("tcp_flags")
+    is_syn_only = l4_proto == "tcp" and tcp_flags is not None and (tcp_flags & 0x12) == 0x02
+    severity = "WARNING"
+    desc_extra = ""
+    if is_syn_only:
+        desc_extra = " [SYN scan]"
+
+    # ── Port scan correlation ────────────────────────────────────
+    src_ip = packet.get("src_ip") or ""
+    scan_detected = storage.track_port_contact(
+        src_ip, dst_port,
+        threshold_ports=settings.scan_threshold_ports,
+        threshold_seconds=settings.scan_threshold_seconds,
+    )
+    if scan_detected:
+        scan_event = _event_from_packet(
+            severity="ALARM",
+            description=f"Port scan rilevato da {src_ip}: >= {settings.scan_threshold_ports} porte distinte in {settings.scan_threshold_seconds}s",
+            packet=packet,
+            protocol=UNKNOWN,
+            dedup_key=f"scan:{src_ip}",
+        )
+        record_event(scan_event)
+
     event = _event_from_packet(
-        severity="WARNING",
-        description="Traffico diretto verso asset EWS su eth0 (esclusa porta web)",
+        severity=severity,
+        description=f"Traffico diretto verso asset EWS su eth0{desc_extra}",
         packet=packet,
         protocol=protocol,
-        dedup_key=f"ews-contact:{packet.get('src_ip')}:{packet.get('src_mac')}:{protocol}:{dst_port}:{packet.get('ethertype')}",
+        dedup_key=f"ews-contact:{src_ip}:{packet.get('src_mac')}:{protocol}:{dst_port}:{packet.get('ethertype')}",
     )
     record_event(event)
 
+
+# ── eth1 handler (SPAN mirror — passive baseline comparison) ─────────
 
 def handle_eth1_packet(packet: dict) -> None:
     classification = classify_packet(packet)
@@ -134,6 +215,27 @@ def handle_eth1_packet(packet: dict) -> None:
 
     state = storage.get_state()
 
+    # ── ARP handling ─────────────────────────────────────────────
+    if packet.get("l4_proto") == "arp":
+        arp_ip = packet.get("arp_sender_ip")
+        arp_mac = packet.get("arp_sender_mac")
+        if state == "OFF":
+            # Learn ARP mapping during baseline
+            storage.upsert_baseline_arp(arp_ip, arp_mac)
+        else:
+            # Check for ARP spoofing
+            alert_desc = storage.check_arp_consistency(arp_ip, arp_mac)
+            if alert_desc:
+                event = _event_from_packet(
+                    severity="ALARM",
+                    description=alert_desc,
+                    packet=packet,
+                    protocol=UNKNOWN,
+                    dedup_key=f"arp-spoof:{arp_ip}:{arp_mac}",
+                )
+                record_event(event)
+
+    # ── Baseline learning (OFF mode) ─────────────────────────────
     if state == "OFF":
         for protocol in classification.protocols:
             storage.upsert_baseline_protocol(protocol)
@@ -143,6 +245,9 @@ def handle_eth1_packet(packet: dict) -> None:
             storage.upsert_baseline_host(address, addr_type)
         return
 
+    # ── Anomaly detection (ON mode) ──────────────────────────────
+
+    # New host detection
     for address, _ in _normalize_host_list(packet):
         if address and not storage.has_baseline_host(address):
             event = _event_from_packet(
@@ -154,6 +259,7 @@ def handle_eth1_packet(packet: dict) -> None:
             )
             record_event(event)
 
+    # Alien protocol detection
     baseline_protocols = storage.get_baseline_protocols()
     for protocol in classification.protocols:
         if protocol not in baseline_protocols:
@@ -166,6 +272,8 @@ def handle_eth1_packet(packet: dict) -> None:
             )
             record_event(event)
 
+
+# ── Pydantic models ─────────────────────────────────────────────────
 
 class StatePayload(BaseModel):
     state: str = Field(pattern="^(OFF|ON)$")
@@ -248,10 +356,12 @@ def api_status() -> dict:
             "ip": _if_ip_address(settings.eth0_iface),
             "mac": _if_mac_address(settings.eth0_iface),
         },
+        "auth_enabled": bool(settings.api_key),
+        "webhook_configured": bool(settings.webhook_url),
     }
 
 
-@app.post("/api/state")
+@app.post("/api/state", dependencies=[Depends(verify_api_key)])
 def api_set_state(payload: StatePayload) -> dict:
     storage.set_state(payload.state)
     return {"ok": True, "state": payload.state}
@@ -283,10 +393,15 @@ def api_get_config() -> dict:
         "dedup_window_seconds": settings.dedup_window_seconds,
         "recent_window_seconds": settings.recent_window_seconds,
         "state": storage.get_state(),
+        "scan_threshold_ports": settings.scan_threshold_ports,
+        "scan_threshold_seconds": settings.scan_threshold_seconds,
+        "event_rate_limit": settings.event_rate_limit,
+        "auth_enabled": bool(settings.api_key),
+        "webhook_configured": bool(settings.webhook_url),
     }
 
 
-@app.post("/api/config")
+@app.post("/api/config", dependencies=[Depends(verify_api_key)])
 def api_update_config(payload: ConfigPayload) -> dict:
     if payload.dedup_window_seconds is not None:
         settings.dedup_window_seconds = payload.dedup_window_seconds
@@ -298,7 +413,7 @@ def api_baseline_export() -> dict:
     return storage.export_baseline()
 
 
-@app.post("/api/baseline/import")
+@app.post("/api/baseline/import", dependencies=[Depends(verify_api_key)])
 def api_baseline_import(payload: BaselineImportPayload) -> dict:
     try:
         storage.import_baseline(payload.model_dump())
