@@ -7,7 +7,7 @@
 
 ## Indice
 
-- [Razionale](#razionale)
+- [L'idea](#l-idea)
 - [Architettura](#architettura)
 - [Protocolli supportati](#protocolli-supportati)
 - [Regole di detection](#regole-di-detection)
@@ -20,13 +20,13 @@
 
 ---
 
-## Razionale
+## L'idea
 
 Le reti OT sono **deterministiche e cicliche**: gli stessi dispositivi eseguono gli stessi protocolli in cicli prevedibili. Un attacco inizia quasi sempre con una fase di **Reconnaissance** (scansione IP/porte) per mappare la rete prima dell'exploitation (ICS Cyber Kill Chain).
 
 Questo sistema sfrutta due principi:
 
-| Principio | Come funziona |
+| Principio | Come funziona (esempio) |
 |---|---|
 | **Protocollo alieno** | Se la rete usa solo Profinet, qualsiasi traffico Modbus/OPC UA è un IoC immediato |
 | **Dispositivo silente** | L'honeypot non ha ruolo nel processo produttivo: ogni contatto verso di esso è sospetto |
@@ -39,30 +39,30 @@ A differenza degli IDS tradizionali basati su firme, l'EWS opera sulla **telemet
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                Container EWS                     │
-│                                                  │
+│                Container EWS                    │
+│                                                 │
 │  ┌──────────┐   ┌──────────┐   ┌─────────────┐  │
 │  │ Sniffer  │   │ Sniffer  │   │  Honeypot   │  │
 │  │  eth0    │   │  eth1    │   │  TCP/UDP    │  │
-│  │ (mgmt)  │   │ (SPAN)   │   │  Traps      │  │
+│  │ (mgmt)   │   │ (SPAN)   │   │  Traps      │  │
 │  └────┬─────┘   └────┬─────┘   └──────┬──────┘  │
-│       │              │                 │         │
-│       └──────────────┼─────────────────┘         │
-│                      ▼                           │
-│              ┌──────────────┐                    │
-│              │   Engine     │──► Webhook/SIEM    │
-│              │  Detection   │                    │
-│              └──────┬───────┘                    │
-│                     ▼                            │
-│              ┌──────────────┐                    │
-│              │   SQLite     │                    │
-│              │  /data/ews.db│                    │
-│              └──────────────┘                    │
-│                     ▼                            │
-│              ┌──────────────┐                    │
-│              │  FastAPI     │                    │
-│              │  Web UI/API  │                    │
-│              └──────────────┘                    │
+│       │              │                │         │
+│       └──────────────┼────────────────┘         │
+│                      ▼                          │
+│              ┌──────────────┐                   │
+│              │   Engine     │──► Webhook/SIEM   │
+│              │  Detection   │                   │
+│              └──────┬───────┘                   │
+│                     ▼                           │
+│              ┌──────────────┐                   │
+│              │   SQLite     │                   │
+│              │  /data/ews.db│                   │
+│              └──────┬───────┘                   │
+│                     ▼                           │
+│              ┌──────────────┐                   │
+│              │  FastAPI     │                   │
+│              │  Web UI/API  │                   │
+│              └──────────────┘                   │
 └─────────────────────────────────────────────────┘
 ```
 
