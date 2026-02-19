@@ -36,10 +36,18 @@ class RawSnifferThread(threading.Thread):
                 LOGGER.error("Errore lettura sniffer %s: %s", self.iface, exc)
                 break
 
-            packet = parse_ethernet_frame(frame)
+            try:
+                packet = parse_ethernet_frame(frame)
+            except Exception:
+                LOGGER.exception("Errore parsing frame su %s", self.iface)
+                continue
             if packet is None:
                 continue
-            self.callback(packet)
+            try:
+                self.callback(packet)
+            except Exception:
+                LOGGER.exception("Errore callback sniffer su %s", self.iface)
+                continue
 
         sock.close()
         LOGGER.info("Sniffer fermato su %s", self.iface)

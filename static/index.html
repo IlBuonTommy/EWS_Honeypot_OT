@@ -146,9 +146,15 @@
       return d.innerHTML;
     }
 
+    let authEnabled = false;
+
     // ── API key helpers ─────────────────────────────────────────────
     function getApiKey() {
       return (document.getElementById('apiKeyInput').value || '').trim();
+    }
+
+    function setApiKey(value) {
+      document.getElementById('apiKeyInput').value = value || '';
     }
 
     // ── Tab navigation ──────────────────────────────────────────────
@@ -163,9 +169,22 @@
     async function api(url, options = {}) {
       const headers = { 'Content-Type': 'application/json' };
       const key = getApiKey();
+      const method = (options.method || 'GET').toUpperCase();
+      if (authEnabled && method !== 'GET' && !key) {
+        throw new Error('API key richiesta per questa operazione');
+      }
       if (key) headers['X-Api-Key'] = key;
       const res = await fetch(url, { headers, ...options });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        let detail = '';
+        try {
+          const payload = await res.json();
+          detail = payload.detail || JSON.stringify(payload);
+        } catch {
+          detail = await res.text();
+        }
+        throw new Error(detail || ('HTTP ' + res.status));
+      }
       return res.json();
     }
 
@@ -251,6 +270,7 @@
 
     async function refreshStatusAndMetrics() {
       const [status, metrics] = await Promise.all([api('/api/status'), api('/api/metrics')]);
+      authEnabled = !!status.auth_enabled;
 
       // Status bar
       const parts = [
@@ -267,7 +287,11 @@
       // Auth status display
       const authEl = document.getElementById('authStatus');
       if (status.auth_enabled) {
-        authEl.innerHTML = '<span class="badge badge-green">Auth attiva</span>';
+        if (getApiKey()) {
+          authEl.innerHTML = '<span class="badge badge-green">Auth attiva (key impostata)</span>';
+        } else {
+          authEl.innerHTML = '<span class="badge badge-red">Auth attiva (manca API key)</span>';
+        }
       } else {
         authEl.innerHTML = '<span class="badge badge-red">Auth disattivata</span>';
       }
@@ -338,41 +362,84 @@
       document.getElementById('dedupInput').value = cfg.dedup_window_seconds;
     }
 
-    document.getElementById('reloadEvents').addEventListener('click', refreshEvents);
+    document.getElementById('reloadEvents').addEventListener('click', async () => {
+      try {
+        await refreshEvents();
+      } catch (e) {
+        document.getElementById('statusBar').textContent = 'Errore eventi: ' + e.message;
+      }
+    });
     document.getElementById('btnOff').addEventListener('click', async () => {
-      await api('/api/state', { method: 'POST', body: JSON.stringify({ state: 'OFF' }) });
-      await refreshStatusAndMetrics();
+      try {
+        await api('/api/state', { method: 'POST', body: JSON.stringify({ state: 'OFF' }) });
+        await refreshStatusAndMetrics();
+      } catch (e) {
+        alert('Impossibile impostare OFF: ' + e.message);
+      }
     });
     document.getElementById('btnOn').addEventListener('click', async () => {
-      await api('/api/state', { method: 'POST', body: JSON.stringify({ state: 'ON' }) });
-      await refreshStatusAndMetrics();
+      try {
+        await api('/api/state', { method: 'POST', body: JSON.stringify({ state: 'ON' }) });
+        await refreshStatusAndMetrics();
+      } catch (e) {
+        alert('Impossibile impostare ON: ' + e.message);
+      }
     });
     document.getElementById('saveConfig').addEventListener('click', async () => {
-      const dedup = Number(document.getElementById('dedupInput').value);
-      await api('/api/config', { method: 'POST', body: JSON.stringify({ dedup_window_seconds: dedup }) });
-      await refreshConfig();
+      try {
+        const dedup = Number(document.getElementById('dedupInput').value);
+        await api('/api/config', { method: 'POST', body: JSON.stringify({ dedup_window_seconds: dedup }) });
+        await refreshConfig();
+      } catch (e) {
+        alert('Impossibile salvare configurazione: ' + e.message);
+      }
     });
     document.getElementById('exportBaseline').addEventListener('click', async () => {
-      const data = await api('/api/baseline/export', { method: 'POST' });
-      document.getElementById('importPayload').value = JSON.stringify(data, null, 2);
+      try {
+        const data = await api('/api/baseline/export', { method: 'POST' });
+        document.getElementById('importPayload').value = JSON.stringify(data, null, 2);
+      } catch (e) {
+        alert('Impossibile esportare baseline: ' + e.message);
+      }
     });
     document.getElementById('importBaseline').addEventListener('click', async () => {
-      const payload = JSON.parse(document.getElementById('importPayload').value || '{}');
-      await api('/api/baseline/import', { method: 'POST', body: JSON.stringify(payload) });
-      await refreshStatusAndMetrics();
-      await refreshConfig();
+      try {
+        const payload = JSON.parse(document.getElementById('importPayload').value || '{}');
+        await api('/api/baseline/import', { method: 'POST', body: JSON.stringify(payload) });
+        await refreshStatusAndMetrics();
+        await refreshConfig();
+      } catch (e) {
+        alert('Impossibile importare baseline: ' + e.message);
+      }
     });
 
     async function boot() {
       try {
+        const savedApiKey = localStorage.getItem('ews_api_key') || '';
+        setApiKey(savedApiKey);
+        document.getElementById('apiKeyInput').addEventListener('input', () => {
+          localStorage.setItem('ews_api_key', getApiKey());
+        });
         await Promise.all([refreshStatusAndMetrics(), refreshEvents(), refreshConfig()]);
       } catch (e) {
         document.getElementById('statusBar').textContent = 'Errore: ' + e.message;
       }
     }
 
-    setInterval(refreshStatusAndMetrics, 5000);
-    setInterval(refreshEvents, 7000);
+    setInterval(async () => {
+      try {
+        await refreshStatusAndMetrics();
+      } catch (e) {
+        document.getElementById('statusBar').textContent = 'Errore status: ' + e.message;
+      }
+    }, 5000);
+    setInterval(async () => {
+      try {
+        await refreshEvents();
+      } catch {
+        // keep polling even if one request fails
+      }
+    }, 7000);
     boot();
   </script>
 </body>
