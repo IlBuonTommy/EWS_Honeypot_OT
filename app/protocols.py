@@ -35,6 +35,7 @@ SUPPORTED_PROTOCOLS = [
     S7COMM,
     BACNET,
     FINS,
+    UNKNOWN,
 ]
 
 # ── EtherType → Protocol (raw Ethernet / L2) ────────────────────────
@@ -66,6 +67,9 @@ _UDP_PORT_MAP: dict[int, str] = {
     47808: BACNET,
     9600:  FINS,
 }
+
+# Common PN-DCP/PNIO ports used by Profinet traffic over IP
+_PROFINET_PORTS: set[int] = {34962, 34963, 34964}
 
 
 @dataclass(slots=True)
@@ -125,5 +129,12 @@ def classify_packet(packet: dict) -> ClassificationResult:
 
     if 61450 in ports:
         protocols.add(CCLINK_IE)
+
+    if any(p in _PROFINET_PORTS for p in ports):
+        protocols.add(PROFINET)
+
+    # Keep telemetry visible even when protocol-specific matching fails
+    if not protocols:
+        protocols.add(UNKNOWN)
 
     return ClassificationResult(protocols=protocols, indicators=indicators)
