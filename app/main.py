@@ -136,6 +136,9 @@ def _event_from_packet(severity: str, description: str, packet: dict, protocol: 
 
 
 def record_event(event: dict) -> None:
+    # In OFF (baseline) mode, suppress all warnings and alarms
+    if storage.get_state() == "OFF":
+        return
     storage.record_event(event, settings.dedup_window_seconds)
     # Send webhook for ALARM severity
     if event.get("severity") == "ALARM":
@@ -148,6 +151,10 @@ def handle_eth0_packet(packet: dict) -> None:
     classification = classify_packet(packet)
     for protocol in classification.protocols:
         storage.add_protocol_observation(protocol, packet.get("length", 0), [packet.get("src_ip"), packet.get("src_mac")])
+
+    # In OFF (baseline) mode, only collect stats — no events from honeypot
+    if storage.get_state() == "OFF":
+        return
 
     local_ip = _if_ip_address(settings.eth0_iface)
     local_mac = _if_mac_address(settings.eth0_iface)
@@ -315,6 +322,9 @@ class BaselineImportPayload(BaseModel):
 @app.on_event("startup")
 async def startup_event() -> None:
     global eth0_sniffer, eth1_sniffer, port_traps
+
+    # Always start in OFF (baseline) mode
+    storage.set_state("OFF")
 
     storage.purge_old_events(settings.events_retention_days)
 

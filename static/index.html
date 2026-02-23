@@ -150,6 +150,7 @@
     }
 
     let authEnabled = false;
+    let systemState = 'OFF';
 
     // ── Sound management ────────────────────────────────────────────
     const warningSound = new Audio('/sound/warning.mp3');
@@ -211,6 +212,8 @@
     }
 
     async function checkForNewSounds() {
+      // Only play sounds when system is in ON (monitoring) mode
+      if (systemState !== 'ON') return;
       try {
         const data = await api('/api/events?since_seconds=15&limit=50');
         checkEventsForSound(data.items);
@@ -340,6 +343,7 @@
     async function refreshStatusAndMetrics() {
       const [status, metrics] = await Promise.all([api('/api/status'), api('/api/metrics')]);
       authEnabled = !!status.auth_enabled;
+      systemState = status.state;
 
       // Status bar
       const parts = [

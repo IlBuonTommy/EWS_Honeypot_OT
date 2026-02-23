@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY app /app/app
 COPY static /app/static
+COPY sound /app/sound
 
 RUN mkdir -p /data
 
