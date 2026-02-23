@@ -3,14 +3,13 @@ services:
     build: .
     container_name: ot-ews-full
     restart: unless-stopped
-    cap_add:
-      - NET_RAW
-      - NET_ADMIN
+    network_mode: host
+    privileged: true
     environment:
       EWS_MODE: full
       EWS_WEB_PORT: ${EWS_WEB_PORT:-8080}
-      EWS_ETH0_IFACE: eth0
-      EWS_ETH1_IFACE: eth1
+      EWS_ETH0_IFACE: ${EWS_ETH0_IFACE:-eth0}
+      EWS_ETH1_IFACE: ${EWS_ETH1_IFACE:-eth1}
       EWS_DEDUP_WINDOW_SECONDS: ${EWS_DEDUP_WINDOW_SECONDS:-30}
       EWS_EVENTS_RETENTION_DAYS: ${EWS_EVENTS_RETENTION_DAYS:-30}
       EWS_RECENT_WINDOW_SECONDS: ${EWS_RECENT_WINDOW_SECONDS:-600}
@@ -22,23 +21,3 @@ services:
       EWS_EVENT_RATE_LIMIT: ${EWS_EVENT_RATE_LIMIT:-100}
     volumes:
       - ./data:/data
-    ports:
-      - "${EWS_WEB_PORT:-8080}:${EWS_WEB_PORT:-8080}"
-    networks:
-      ot_mgmt:
-        ipv4_address: ${EWS_ETH0_IP}
-      ot_mirror: {}
-
-networks:
-  ot_mgmt:
-    driver: macvlan
-    driver_opts:
-      parent: ${OT_MGMT_PARENT_IFACE}
-    ipam:
-      config:
-        - subnet: ${OT_MGMT_SUBNET}
-          gateway: ${OT_MGMT_GATEWAY}
-  ot_mirror:
-    driver: macvlan
-    driver_opts:
-      parent: ${OT_SPAN_PARENT_IFACE}
