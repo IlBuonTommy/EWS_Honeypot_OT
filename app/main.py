@@ -33,6 +33,7 @@ app = FastAPI(title="OT EWS Honeypot")
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
+SOUND_DIR = os.path.join(BASE_DIR, "sound")
 
 stop_event = threading.Event()
 eth0_sniffer: RawSnifferThread | None = None
@@ -170,6 +171,28 @@ def handle_eth0_packet(packet: dict) -> None:
         return
 
     protocol = next(iter(classification.protocols), UNKNOWN)
+
+    # ── Gateway Discovery / ARP Spoofing detection on eth0 ───────
+    # Packet addressed to our MAC but with a destination IP ≠ our IP
+    # means someone is trying to use us as a gateway or is ARP spoofing
+    if (local_mac and local_ip and dst_ip
+            and dst_mac == local_mac.lower()
+            and dst_ip != local_ip
+            and packet.get("l4_proto") != "arp"):
+        src_ip_val = packet.get("src_ip") or "unknown"
+        gw_event = _event_from_packet(
+            severity="ALARM",
+            description=(
+                f"Possibile Gateway Discovery o ARP Spoofing su eth0: pacchetto destinato a "
+                f"MAC locale ({local_mac}) ma con IP destinazione {dst_ip} diverso da "
+                f"IP locale ({local_ip}), sorgente {src_ip_val}"
+            ),
+            packet=packet,
+            protocol=protocol,
+            dedup_key=f"gw-discovery:{src_ip_val}:{dst_ip}",
+        )
+        record_event(gw_event)
+        return
 
     # ── SYN scan detection (TCP SYN without ACK) ─────────────────
     tcp_flags = packet.get("tcp_flags")
@@ -440,4 +463,12 @@ def api_emit_test_event() -> dict:
     return {"ok": True}
 
 
+@app.post("/api/events/clear", dependencies=[Depends(verify_api_key)])
+def api_clear_events() -> dict:
+    """Clear all warning and alarm events from the database."""
+    storage.clear_events()
+    return {"ok": True}
+
+
+app.mount("/sound", StaticFiles(directory=SOUND_DIR), name="sound")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

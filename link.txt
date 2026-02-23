@@ -1,2 +1,0 @@
-https://github.com/mushorg/conpot
-https://github.com/aau-network-security/riotpot

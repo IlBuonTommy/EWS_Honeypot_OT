@@ -358,6 +358,11 @@ class Storage:
         with self._lock, self._conn:
             self._conn.execute("DELETE FROM events WHERE last_seen < ?", (cutoff,))
 
+    def clear_events(self) -> None:
+        """Delete all events from the database."""
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM events")
+
     def list_events(
         self,
         severity: str | None = None,

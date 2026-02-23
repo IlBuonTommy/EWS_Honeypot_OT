@@ -72,6 +72,9 @@
 
     <section id="dashboard" class="active">
       <h2>Dashboard Protocolli OT</h2>
+      <div class="row">
+        <button id="clearAlerts" style="background:#7f1d1d;border-color:#991b1b;">&#128465; Cancella Warning e Allarmi</button>
+      </div>
       <div id="dashStats" class="stats-bar"></div>
       <div id="cards" class="grid"></div>
     </section>
@@ -147,6 +150,72 @@
     }
 
     let authEnabled = false;
+
+    // ── Sound management ────────────────────────────────────────────
+    const warningSound = new Audio('/sound/warning.mp3');
+    const alarmSound = new Audio('/sound/allarm.mp3');
+    let currentSoundPriority = 0; // 0=none, 1=warning, 2=alarm
+    let lastSoundCheckTime = Date.now() / 1000;
+    let soundInitialized = false;
+
+    alarmSound.addEventListener('ended', () => { currentSoundPriority = 0; });
+    warningSound.addEventListener('ended', () => {
+      if (currentSoundPriority === 1) currentSoundPriority = 0;
+    });
+
+    function playAlertSound(severity) {
+      if (severity === 'ALARM') {
+        if (currentSoundPriority < 2) {
+          warningSound.pause();
+          warningSound.currentTime = 0;
+          currentSoundPriority = 2;
+          alarmSound.currentTime = 0;
+          alarmSound.play().catch(() => {});
+        }
+      } else if (severity === 'WARNING') {
+        if (currentSoundPriority === 0) {
+          currentSoundPriority = 1;
+          warningSound.currentTime = 0;
+          warningSound.play().catch(() => {});
+        }
+      }
+    }
+
+    function checkEventsForSound(events) {
+      if (!soundInitialized) {
+        soundInitialized = true;
+        if (events.length > 0) {
+          lastSoundCheckTime = Math.max(...events.map(e => e.last_seen || 0));
+        }
+        return;
+      }
+      let maxSeverity = null;
+      for (const e of events) {
+        if (e.last_seen > lastSoundCheckTime) {
+          if (e.severity === 'ALARM') {
+            maxSeverity = 'ALARM';
+          } else if (e.severity === 'WARNING' && maxSeverity !== 'ALARM') {
+            maxSeverity = 'WARNING';
+          }
+        }
+      }
+      if (events.length > 0) {
+        const maxTs = Math.max(...events.map(e => e.last_seen || 0));
+        if (maxTs > lastSoundCheckTime) {
+          lastSoundCheckTime = maxTs;
+        }
+      }
+      if (maxSeverity) {
+        playAlertSound(maxSeverity);
+      }
+    }
+
+    async function checkForNewSounds() {
+      try {
+        const data = await api('/api/events?since_seconds=15&limit=50');
+        checkEventsForSound(data.items);
+      } catch (e) { /* ignore sound check errors */ }
+    }
 
     // ── API key helpers ─────────────────────────────────────────────
     function getApiKey() {
@@ -413,6 +482,15 @@
       }
     });
 
+    document.getElementById('clearAlerts').addEventListener('click', async () => {
+      try {
+        await api('/api/events/clear', { method: 'POST' });
+        await Promise.all([refreshStatusAndMetrics(), refreshEvents()]);
+      } catch (e) {
+        alert('Impossibile cancellare gli eventi: ' + e.message);
+      }
+    });
+
     async function boot() {
       try {
         const savedApiKey = localStorage.getItem('ews_api_key') || '';
@@ -429,6 +507,7 @@
     setInterval(async () => {
       try {
         await refreshStatusAndMetrics();
+        await checkForNewSounds();
       } catch (e) {
         document.getElementById('statusBar').textContent = 'Errore status: ' + e.message;
       }
