@@ -73,12 +73,14 @@ A differenza degli IDS tradizionali basati su firme, l'EWS opera sulla **telemet
 | `eth0` | Management / Honeypot | Web UI, API, trap TCP/UDP sulle porte OT |
 | `eth1` | SPAN mirror (solo full mode) | Sniffing passivo del traffico di processo |
 
+> **Nota:** il traffico verso la Web UI (porta `EWS_WEB_PORT`) e il traffico ARP necessario per la risoluzione degli indirizzi sono automaticamente esclusi dalle regole di detection su eth0. Qualsiasi dispositivo può accedere all'interfaccia web senza generare WARNING o ALARM.
+
 ### Modalità operative
 
-| Modalità | Interfacce | Funzionalità |
-|---|---|---|
-| **full** | eth0 + eth1 | Honeypot + baseline learning + alien detection |
-| **light** | solo eth0 | Solo honeypot (nessun mirror/baseline) |
+| Modalità | Interfacce | Networking Docker | Funzionalità |
+|---|---|---|---|
+| **full** | eth0 + eth1 | `network_mode: host` + `privileged` | Honeypot + baseline learning + alien detection |
+| **light** | solo eth0 | macvlan (IP dedicato) | Solo honeypot (nessun mirror/baseline) |
 
 ### Macchina a stati
 
@@ -140,18 +142,30 @@ Lo stato è persistente in SQLite e sopravvive ai riavvii.
 
 | Trigger | Interfaccia | Descrizione |
 |---|---|---|
-| Contatto verso EWS | eth0 | Qualsiasi traffico verso IP/MAC dell'honeypot (esclusa porta Web UI) |
-| Nuovo host | eth1 | IP o MAC non presente nella baseline apppresa in `OFF` |
-| Connessione trap | eth0 | Tentativo di connessione TCP/UDP su una porta OT dell'honeypot |
+| Contatto verso EWS | eth0 | Qualsiasi traffico verso IP/MAC dell'honeypot (esclusa porta Web UI e traffico ARP) |
+| Contatto SYN scan | eth0 | Pacchetti TCP SYN senza ACK verso l'honeypot (etichettati `[SYN scan]`) |
+| Nuovo host | eth1 | IP o MAC non presente nella baseline appresa in `OFF` |
+| Connessione trap TCP | eth0 | Tentativo di connessione TCP su una porta OT dell'honeypot |
+| Datagram trap UDP (vuoto) | eth0 | Ricezione datagram UDP vuoto su una porta OT trap |
 
 ### ALARM
 
 | Trigger | Interfaccia | Descrizione |
 |---|---|---|
 | Protocollo alieno | eth1 | Protocollo OT rilevato su eth1 non presente nella baseline |
-| Payload su trap | eth0 | Dati applicativi inviati a una porta trap dell'honeypot |
+| Payload su trap TCP | eth0 | Dati applicativi inviati a una porta trap TCP dell'honeypot (log primi 128 byte hex) |
+| Payload su trap UDP | eth0 | Datagram UDP con payload ricevuto su una porta trap dell'honeypot |
 | Port scan | eth0 | IP sorgente contatta ≥ N porte distinte in T secondi |
+| Gateway Discovery / ARP Spoofing | eth0 | Pacchetto destinato al MAC locale ma con IP destinazione diverso da IP locale |
 | ARP spoofing | eth1 | Mapping IP↔MAC diverso dalla baseline appresa |
+
+### Esclusioni automatiche (no false positive)
+
+| Traffico escluso | Interfaccia | Motivo |
+|---|---|---|
+| TCP verso `EWS_WEB_PORT` | eth0 | Accesso legittimo alla Web UI |
+| ARP (request/reply) | eth0 | Risoluzione indirizzi necessaria per qualsiasi comunicazione IP, incluso accesso alla Web UI |
+| Traffico non diretto all'EWS | eth0 | Solo pacchetti con dst_ip o dst_mac dell'honeypot vengono analizzati |
 
 ### Deduplicazione
 
@@ -180,6 +194,7 @@ Gli endpoint mutabili (POST) richiedono l'header `X-Api-Key` **se** la variabile
 | `POST` | `/api/baseline/export` | — | Export baseline JSON |
 | `POST` | `/api/baseline/import` | `X-Api-Key` | Import baseline JSON |
 | `POST` | `/api/events/emit-test` | — | Genera evento di test |
+| `POST` | `/api/events/clear` | `X-Api-Key` | Cancella tutti gli eventi WARNING e ALARM |
 
 ---
 
@@ -189,15 +204,27 @@ Accessibile via HTTP su `http://<IP_eth0>:<EWS_WEB_PORT>/`.
 
 | Sezione | Contenuto |
 |---|---|
-| **Dashboard** | 14 card protocollo con colore stato (grigio/verde/giallo/rosso), PPS, BPS, indirizzi rilevati, ultimi eventi. Barra statistiche riepilogativa. |
+| **Dashboard** | 15 card protocollo con colore stato (grigio/verde/giallo/rosso), PPS, BPS, indirizzi rilevati, ultimi eventi. Barra statistiche riepilogativa. Pulsante per cancellare tutti gli eventi. |
 | **Eventi** | Tabella filtrabile per severity, protocollo, host, finestra temporale. Righe ALARM evidenziate. |
 | **Stato** | Toggle OFF/ON, lista protocolli baseline |
 | **Configurazione** | Dedup window, export/import baseline JSON |
 
-Campo **API Key** integrato nell'header per autenticazione trasparente.  
-Aggiornamento live via polling REST (5s metriche, 7s eventi).
+### Alert sonori
 
-Tutte le renderizzazioni usano escaping XSS (`textContent` / funzione `esc()`).
+La Web UI riproduce automaticamente suoni di allerta quando il sistema è in stato **ON**:
+
+| Severity | File audio | Comportamento |
+|---|---|---|
+| **WARNING** | `warning.mp3` | Riprodotto alla comparsa di nuovi WARNING |
+| **ALARM** | `allarm.mp3` | Riprodotto con priorità superiore, interrompe il suono WARNING |
+
+I suoni vengono verificati ogni 15 secondi tramite polling degli eventi recenti. Al primo caricamento della pagina i suoni non vengono riprodotti (evita allarmi per eventi preesistenti).
+
+### Altre caratteristiche UI
+
+- Campo **API Key** integrato nell'header con persistenza in `localStorage` per autenticazione trasparente
+- Aggiornamento live via polling REST (5s metriche, 7s eventi)
+- Tutte le renderizzazioni usano escaping XSS (`textContent` / funzione `esc()`)
 
 ---
 
@@ -210,18 +237,17 @@ Tutte le renderizzazioni usano escaping XSS (`textContent` / funzione `esc()`).
 
 ### 1. Full mode (eth0 + eth1)
 
+Il full mode utilizza `network_mode: host` con `privileged: true` per avere accesso diretto a tutte le interfacce di rete dell'host.
+
 Creare `.env`:
 
 ```env
-# Rete management
-EWS_WEB_PORT=8080
-EWS_ETH0_IP=192.168.10.250
-OT_MGMT_PARENT_IFACE=eth0
-OT_MGMT_SUBNET=192.168.10.0/24
-OT_MGMT_GATEWAY=192.168.10.1
+# Interfacce di rete
+EWS_ETH0_IFACE=eth0
+EWS_ETH1_IFACE=eth1
 
-# Mirror SPAN
-OT_SPAN_PARENT_IFACE=eth1
+# Web UI
+EWS_WEB_PORT=8080
 
 # Detection
 EWS_DEDUP_WINDOW_SECONDS=30
@@ -246,20 +272,39 @@ Avvio:
 docker compose -f docker-compose.full.yml up -d --build
 ```
 
-Capability richieste: `NET_RAW`, `NET_ADMIN`.
+Requisiti: `privileged: true` (accesso raw socket + promiscuous mode su entrambe le interfacce).
 
 ### 2. Light mode (solo eth0)
 
-`.env` minimale:
+Il light mode utilizza rete **macvlan** per assegnare all'honeypot un IP/MAC dedicato sulla rete OT, rendendolo indistinguibile da un asset fisico reale.
+
+`.env`:
 
 ```env
-EWS_WEB_PORT=8080
+# Rete macvlan
 EWS_ETH0_IP=192.168.10.250
 OT_MGMT_PARENT_IFACE=eth0
 OT_MGMT_SUBNET=192.168.10.0/24
 OT_MGMT_GATEWAY=192.168.10.1
+
+# Web UI
+EWS_WEB_PORT=8080
+
+# Detection
 EWS_DEDUP_WINDOW_SECONDS=30
+
+# Sicurezza (consigliato)
 EWS_API_KEY=una-chiave-segreta-lunga
+
+# Alerting esterno (opzionale)
+EWS_WEBHOOK_URL=https://siem.azienda.it/webhook/ews
+
+# Port scan detection
+EWS_SCAN_THRESHOLD_PORTS=5
+EWS_SCAN_THRESHOLD_SECONDS=60
+
+# Rate limiting eventi
+EWS_EVENT_RATE_LIMIT=100
 ```
 
 Avvio:
@@ -269,10 +314,6 @@ docker compose -f docker-compose.light.yml up -d --build
 ```
 
 Capability richieste: `NET_RAW`.
-
-### Rete Docker
-
-Viene usata la rete **macvlan** per assegnare all'honeypot un IP/MAC dedicato sulla rete OT, rendendolo indistinguibile da un asset fisico reale.
 
 ---
 
@@ -336,8 +377,10 @@ Compatibile con SIEM, Slack, Microsoft Teams, o qualsiasi endpoint HTTP.
 | API key su endpoint mutabili | Attiva se `EWS_API_KEY` è configurato |
 | Protezione XSS nella dashboard | Tutti i dati renderizzati con escaping |
 | Rate limiting eventi | Configurabile, default 100/sec |
-| ARP spoofing detection | Confronto IP↔MAC vs baseline |
+| ARP spoofing detection | Confronto IP↔MAC vs baseline (eth1) |
+| Gateway Discovery detection | Pacchetti con MAC locale ma IP diverso (eth0) |
 | Port scan detection | Correlazione porte distinte per IP |
+| Esclusione Web UI e ARP su eth0 | Nessun falso positivo per accesso legittimo alla dashboard |
 
 ### Raccomandazioni operative
 
@@ -348,10 +391,17 @@ Compatibile con SIEM, Slack, Microsoft Teams, o qualsiasi endpoint HTTP.
 
 ### Honeypot trap
 
-L'honeypot apre listener su tutte le porte OT principali. Per ogni connessione:
+L'honeypot apre listener su tutte le porte OT principali:
+
+**Porte TCP:** 102 (S7comm/IEC 61850), 502 (Modbus), 4840 (OPC UA), 4843 (OPC UA TLS), 9600 (FINS), 20000 (DNP3), 44818 (EtherNet/IP)
+
+**Porte UDP:** 2222 (EtherNet/IP implicit), 9600 (FINS), 20000 (DNP3), 44818 (EtherNet/IP), 47808 (BACnet/IP)
+
+Per ogni connessione:
 1. **WARNING** al tentativo di connessione TCP o ricezione datagram UDP
 2. **ALARM** se vengono inviati dati applicativi (con log dei primi 128 byte hex)
 3. Risposta fake minimale (Modbus error, TPKT/COTP CC, EtherNet/IP ListIdentity) per prolungare l'interazione e raccogliere più informazioni sull'attaccante
+4. Analisi payload Modbus (unit ID e function code) per maggior dettaglio negli eventi
 
 ---
 
@@ -362,16 +412,19 @@ EWS_Honeypot_OT/
 ├── app/
 │   ├── config.py          # Configurazione da variabili d'ambiente
 │   ├── parser.py          # Parser Ethernet: VLAN, IPv4/v6, ARP, TCP/UDP/ICMP
-│   ├── protocols.py       # Classificazione 14 protocolli OT (L2 + L4)
-│   ├── sniffer.py         # Raw socket sniffer thread (AF_PACKET)
+│   ├── protocols.py       # Classificazione 15 protocolli OT (L2 + L4)
+│   ├── sniffer.py         # Raw socket sniffer thread (AF_PACKET, promiscuous)
 │   ├── honeypot.py        # TCP/UDP trap con fake responses
-│   ├── storage.py         # SQLite (WAL mode) + rate limiter + scan detector
+│   ├── storage.py         # SQLite (WAL mode) + rate limiter + scan detector + ARP cache
 │   └── main.py            # FastAPI app, detection engine, webhook
 ├── static/
-│   └── index.html         # Dashboard SPA (vanilla JS, XSS-safe)
+│   └── index.html         # Dashboard SPA (vanilla JS, XSS-safe, alert sonori)
+├── sound/
+│   ├── warning.mp3        # Suono alert per eventi WARNING
+│   └── allarm.mp3         # Suono alert per eventi ALARM
 ├── Dockerfile
-├── docker-compose.full.yml
-├── docker-compose.light.yml
+├── docker-compose.full.yml   # Deploy full mode (host networking + privileged)
+├── docker-compose.light.yml  # Deploy light mode (macvlan networking)
 ├── requirements.txt
 └── README.md
 ```
