@@ -173,8 +173,14 @@ def handle_eth0_packet(packet: dict) -> None:
     if not directed_to_ews:
         return
 
-    # Exclude web UI traffic
+    # Exclude web UI traffic (TCP connections to the web port)
     if l4_proto == "tcp" and dst_port == settings.web_port:
+        return
+
+    # Exclude ARP traffic — normal address resolution required for any IP
+    # communication (including web UI access). ARP spoofing detection is
+    # handled separately on eth1.
+    if l4_proto == "arp":
         return
 
     protocol = next(iter(classification.protocols), UNKNOWN)
