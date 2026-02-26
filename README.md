@@ -31,7 +31,7 @@ Questo sistema sfrutta due principi:
 | **Protocollo alieno** | Se la rete usa solo Profinet, qualsiasi traffico Modbus/OPC UA è un IoC immediato |
 | **Dispositivo silente** | L'honeypot non ha ruolo nel processo produttivo: ogni contatto verso di esso è sospetto |
 
-A differenza degli IDS tradizionali basati su firme, l'EWS opera sulla **telemetria di rete** raccogliendo solo metadati minimi (nessun PCAP/payload completo), con footprint ridotto adatto ad ambienti industriali.
+A differenza degli IDS tradizionali basati su firme, l'EWS opera sulla **telemetria di rete** raccogliendo solo metadati minimi (nessun PCAP/payload completo). Questa scelta riduce sensibilmente l’impatto in termini di risorse e lo rende una soluzione a basso footprint, adatta alla distribuzione massiva in ambienti industriali, dove spesso si disponde di sistemi con risorse hardware contenute.
 
 ---
 
@@ -97,7 +97,7 @@ Lo stato è persistente in SQLite e sopravvive ai riavvii.
 
 ### Protocolli L2 (classificazione per EtherType)
 
-| Protocollo | EtherType | Note |
+| Protocollo | EtherType | Nome esteso |
 |---|---|---|
 | Profinet | `0x8892` | Profinet RT/IRT |
 | EtherCAT | `0x88A4` | Frame EtherCAT |
@@ -136,7 +136,7 @@ Lo stato è persistente in SQLite e sopravvive ai riavvii.
 
 ---
 
-## Regole di detection
+## Regole di detection (IoC)
 
 ### WARNING
 
