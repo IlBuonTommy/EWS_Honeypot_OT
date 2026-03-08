@@ -48,6 +48,10 @@ _PORT_PROTOCOL_MAP: dict[int, str] = {
     44818: "EtherNet/IP",
     47808: "BACnet/IP",
     2222:  "EtherNet/IP (implicit)",
+    34962: "Profinet (RT Unicast)",
+    34963: "Profinet (RT Multicast)",
+    34964: "Profinet (RPC Context Manager)",
+    53247: "Profinet (RPC client/server)",
 }
 
 # Fake responses indexed by TCP port
@@ -197,6 +201,10 @@ class HoneypotPortTraps:
             20000,  # DNP3
             44818,  # EtherNet/IP
             47808,  # BACnet/IP
+            34962,  # PROFINET RT Unicast
+            34963,  # PROFINET RT Multicast
+            34964,  # PROFINET RPC Context Manager
+            53247,  # PROFINET RPC client/server
         ]
 
         for port in tcp_ports:

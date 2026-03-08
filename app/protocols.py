@@ -66,10 +66,14 @@ _UDP_PORT_MAP: dict[int, str] = {
     20000: DNP3,
     47808: BACNET,
     9600:  FINS,
+    34962: PROFINET,        # PROFINET RT Unicast
+    34963: PROFINET,        # PROFINET RT Multicast
+    34964: PROFINET,        # PROFINET RPC Context Manager
+    53247: PROFINET,        # PROFINET RPC client/server
 }
 
 # Common PN-DCP/PNIO ports used by Profinet traffic over IP
-_PROFINET_PORTS: set[int] = {34962, 34963, 34964}
+_PROFINET_PORTS: set[int] = {34962, 34963, 34964, 53247}
 
 
 @dataclass(slots=True)

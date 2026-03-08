@@ -118,6 +118,8 @@ Lo stato è persistente in SQLite e sopravvive ai riavvii.
 | IEC 61850 MMS | 102 | TCP (TPKT/COTP) |
 | BACnet/IP | 47808 | UDP |
 | FINS (Omron) | 9600 | TCP + UDP |
+| Profinet (via porte UDP) | 34962, 34963, 34964, 53247 | UDP |
+| CC-Link IE (via porta) | 61450 | — |
 | Powerlink (via porte) | 3819, 3820 | — |
 
 ### Parser Ethernet
