@@ -1,41 +1,41 @@
 # OT Early Warning System (EWS)
 
-> Sonda passiva + Honeypot per reti industriali (OT/ICS).  
-> Rileva scansioni, protocolli alieni e host non autorizzati **prima** dell'exploitation.
+> Passive probe + honeypot for industrial networks (OT/ICS).  
+> Detects scans, “alien” protocols, and unauthorized hosts **before** exploitation.
 
 ---
 
-## Indice
+## Table of contents
 
-- [L'idea](#l-idea)
-- [Architettura](#architettura)
-- [Protocolli supportati](#protocolli-supportati)
-- [Regole di detection](#regole-di-detection)
-- [API REST](#api-rest)
+- [The idea](#the-idea)
+- [Architecture](#architecture)
+- [Supported protocols](#supported-protocols)
+- [Detection rules](#detection-rules)
+- [REST API](#rest-api)
 - [Web UI](#web-ui)
 - [Deploy](#deploy)
-- [Configurazione](#configurazione)
-- [Sicurezza](#sicurezza)
-- [Struttura repository](#struttura-repository)
+- [Configuration](#configuration)
+- [Security](#security)
+- [Repository structure](#repository-structure)
 
 ---
 
-## L'idea
+## The idea
 
-Le reti OT sono **deterministiche e cicliche**: gli stessi dispositivi eseguono gli stessi protocolli in cicli prevedibili. Un attacco inizia quasi sempre con una fase di **Reconnaissance** (scansione IP/porte) per mappare la rete prima dell'exploitation (ICS Cyber Kill Chain).
+OT networks are **deterministic and cyclical**: the same devices run the same protocols in predictable cycles. An attack almost always starts with a **reconnaissance** phase (IP/port scanning) to map the network before exploitation (ICS Cyber Kill Chain).
 
-Questo sistema sfrutta due principi:
+This system leverages two principles:
 
-| Principio | Come funziona (esempio) |
+| Principle | How it works (example) |
 |---|---|
-| **Protocollo alieno** | Se la rete usa solo Profinet, qualsiasi traffico Modbus/OPC UA è un IoC immediato |
-| **Dispositivo silente** | L'honeypot non ha ruolo nel processo produttivo: ogni contatto verso di esso è sospetto |
+| **Alien protocol** | If the network only uses Profinet, any Modbus/OPC UA traffic is an immediate IoC |
+| **Silent device** | The honeypot has no role in the production process: any contact to it is suspicious |
 
-A differenza degli IDS tradizionali basati su firme, l'EWS opera sulla **telemetria di rete** raccogliendo solo metadati minimi (nessun PCAP/payload completo). Questa scelta riduce sensibilmente l’impatto in termini di risorse e lo rende una soluzione a basso footprint, adatta alla distribuzione massiva in ambienti industriali, dove spesso si disponde di sistemi con risorse hardware contenute.
+Unlike traditional signature-based IDS, the EWS works on **network telemetry**, collecting only minimal metadata (no PCAP / full payload capture). This choice significantly reduces resource impact and makes it a low-footprint solution, suitable for widespread deployment in industrial environments, where hardware resources are often limited.
 
 ---
 
-## Architettura
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -66,49 +66,49 @@ A differenza degli IDS tradizionali basati su firme, l'EWS opera sulla **telemet
 └─────────────────────────────────────────────────┘
 ```
 
-### Interfacce di rete
+### Network interfaces
 
-| Interfaccia | Ruolo | Traffico |
+| Interface | Role | Traffic |
 |---|---|---|
-| `eth0` | Management / Honeypot | Web UI, API, trap TCP/UDP sulle porte OT |
-| `eth1` | SPAN mirror (solo full mode) | Sniffing passivo del traffico di processo |
+| `eth0` | Management / Honeypot | Web UI, API, TCP/UDP traps on OT ports |
+| `eth1` | SPAN mirror (full mode only) | Passive sniffing of process traffic |
 
-> **Nota:** il traffico verso la Web UI (porta `EWS_WEB_PORT`) e il traffico ARP necessario per la risoluzione degli indirizzi sono automaticamente esclusi dalle regole di detection su eth0. Qualsiasi dispositivo può accedere all'interfaccia web senza generare WARNING o ALARM.
+> **Note:** traffic to the Web UI (port `EWS_WEB_PORT`) and the ARP traffic required for address resolution are automatically excluded from detection rules on eth0. Any device can access the web interface without generating WARNING or ALARM.
 
-### Modalità operative
+### Operating modes
 
-| Modalità | Interfacce | Networking Docker | Funzionalità |
+| Mode | Interfaces | Docker networking | Features |
 |---|---|---|---|
 | **full** | eth0 + eth1 | `network_mode: host` + `privileged` | Honeypot + baseline learning + alien detection |
-| **light** | solo eth0 | macvlan (IP dedicato) | Solo honeypot (nessun mirror/baseline) |
+| **light** | eth0 only | macvlan (dedicated IP) | Honeypot only (no mirror/baseline) |
 
-### Macchina a stati
+### State machine
 
-| Stato | Comportamento |
+| State | Behavior |
 |---|---|
-| **OFF** | Apprendimento baseline: protocolli, host e mapping ARP vengono registrati come "normali" |
-| **ON** | Sorveglianza attiva: ogni deviazione dalla baseline genera WARNING o ALARM |
+| **OFF** | Baseline learning: protocols, hosts, and ARP mappings are recorded as “normal” |
+| **ON** | Active monitoring: any deviation from the baseline generates WARNING or ALARM |
 
-Lo stato è persistente in SQLite e sopravvive ai riavvii.
+The state is persisted in SQLite and survives restarts.
 
 ---
 
-## Protocolli supportati
+## Supported protocols
 
-### Protocolli L2 (classificazione per EtherType)
+### L2 protocols (classified by EtherType)
 
-| Protocollo | EtherType | Nome esteso |
+| Protocol | EtherType | Full name |
 |---|---|---|
 | Profinet | `0x8892` | Profinet RT/IRT |
-| EtherCAT | `0x88A4` | Frame EtherCAT |
+| EtherCAT | `0x88A4` | EtherCAT frame |
 | Powerlink | `0x88AB` | ETHERNET Powerlink |
 | CC-Link IE | `0x890F` | CC-Link IE Field |
 | IEC 61850 GOOSE | `0x88B8` | Generic Object Oriented Substation Event |
 | IEC 61850 SV | `0x88BA` | Sampled Values |
 
-### Protocolli L4 (classificazione per porta TCP/UDP)
+### L4 protocols (classified by TCP/UDP port)
 
-| Protocollo | Porte | Trasporto |
+| Protocol | Ports | Transport |
 |---|---|---|
 | Modbus TCP | 502 | TCP |
 | EtherNet/IP | 44818 (TCP/UDP), 2222 (UDP) | TCP + UDP |
@@ -118,133 +118,133 @@ Lo stato è persistente in SQLite e sopravvive ai riavvii.
 | IEC 61850 MMS | 102 | TCP (TPKT/COTP) |
 | BACnet/IP | 47808 | UDP |
 | FINS (Omron) | 9600 | TCP + UDP |
-| Profinet (via porte UDP) | 34962, 34963, 34964, 53247 | UDP |
-| CC-Link IE (via porta) | 61450 | — |
-| Powerlink (via porte) | 3819, 3820 | — |
+| Profinet (via UDP ports) | 34962, 34963, 34964, 53247 | UDP |
+| CC-Link IE (via port) | 61450 | — |
+| Powerlink (via ports) | 3819, 3820 | — |
 
-### Parser Ethernet
+### Ethernet parser
 
-- Supporto **802.1Q VLAN tagging** (incluso Q-in-Q `0x88A8` / `0x9100`)
-- Parsing **IPv4** e **IPv6** (con extension headers)
-- Parsing **ARP** per rilevamento spoofing
-- Estrazione **TCP flags** per rilevamento SYN scan
-- Supporto **ICMP / ICMPv6**
+- **802.1Q VLAN tagging** support (including Q-in-Q `0x88A8` / `0x9100`)
+- **IPv4** and **IPv6** parsing (with extension headers)
+- **ARP** parsing for spoofing detection
+- **TCP flags** extraction for SYN-scan detection
+- **ICMP / ICMPv6** support
 
-### Limiti noti
+### Known limitations
 
-- La classificazione è basata su EtherType e porte; non viene eseguita Deep Packet Inspection completa
-- La porta 102 è ambigua: S7comm e IEC 61850 MMS condividono TPKT/COTP — entrambi vengono segnalati
-- Il payload Modbus viene analizzato solo nelle trap honeypot (function code), non nello sniffing passivo
+- Classification is based on EtherType and ports; no full Deep Packet Inspection is performed
+- Port 102 is ambiguous: S7comm and IEC 61850 MMS share TPKT/COTP — both are flagged
+- Modbus payload is analyzed only in honeypot traps (function code), not in passive sniffing
 
 ---
 
-## Regole di detection (IoC)
+## Detection rules (IoC)
 
 ### WARNING
 
-| Trigger | Interfaccia | Descrizione |
+| Trigger | Interface | Description |
 |---|---|---|
-| Contatto verso EWS | eth0 | Qualsiasi traffico verso IP/MAC dell'honeypot (esclusa porta Web UI e traffico ARP) |
-| Contatto SYN scan | eth0 | Pacchetti TCP SYN senza ACK verso l'honeypot (etichettati `[SYN scan]`) |
-| Nuovo host | eth1 | IP o MAC non presente nella baseline appresa in `OFF` |
-| Connessione trap TCP | eth0 | Tentativo di connessione TCP su una porta OT dell'honeypot |
-| Datagram trap UDP (vuoto) | eth0 | Ricezione datagram UDP vuoto su una porta OT trap |
+| Contact to EWS | eth0 | Any traffic to the honeypot IP/MAC (excluding Web UI port and ARP traffic) |
+| SYN-scan contact | eth0 | TCP SYN packets without ACK to the honeypot (tagged `[SYN scan]`) |
+| New host | eth1 | IP or MAC not present in the baseline learned in `OFF` |
+| TCP trap connection | eth0 | TCP connection attempt to an OT port on the honeypot |
+| UDP trap datagram (empty) | eth0 | Receipt of an empty UDP datagram on an OT trap port |
 
 ### ALARM
 
-| Trigger | Interfaccia | Descrizione |
+| Trigger | Interface | Description |
 |---|---|---|
-| Protocollo alieno | eth1 | Protocollo OT rilevato su eth1 non presente nella baseline |
-| Payload su trap TCP | eth0 | Dati applicativi inviati a una porta trap TCP dell'honeypot (log primi 128 byte hex) |
-| Payload su trap UDP | eth0 | Datagram UDP con payload ricevuto su una porta trap dell'honeypot |
-| Port scan | eth0 | IP sorgente contatta ≥ N porte distinte in T secondi |
-| Gateway Discovery / ARP Spoofing | eth0 | Pacchetto destinato al MAC locale ma con IP destinazione diverso da IP locale |
-| ARP spoofing | eth1 | Mapping IP↔MAC diverso dalla baseline appresa |
+| Alien protocol | eth1 | OT protocol observed on eth1 that is not present in the baseline |
+| Payload on TCP trap | eth0 | Application data sent to a TCP trap port on the honeypot (log first 128 bytes in hex) |
+| Payload on UDP trap | eth0 | UDP datagram with payload received on a honeypot trap port |
+| Port scan | eth0 | Source IP contacts ≥ N distinct ports in T seconds |
+| Gateway discovery / ARP spoofing | eth0 | Packet destined to the local MAC but with a destination IP different from the local IP |
+| ARP spoofing | eth1 | IP↔MAC mapping different from the learned baseline |
 
-### Esclusioni automatiche (no false positive)
+### Automatic exclusions (no false positives)
 
-| Traffico escluso | Interfaccia | Motivo |
+| Excluded traffic | Interface | Reason |
 |---|---|---|
-| TCP verso `EWS_WEB_PORT` | eth0 | Accesso legittimo alla Web UI |
-| ARP (request/reply) | eth0 | Risoluzione indirizzi necessaria per qualsiasi comunicazione IP, incluso accesso alla Web UI |
-| Traffico non diretto all'EWS | eth0 | Solo pacchetti con dst_ip o dst_mac dell'honeypot vengono analizzati |
+| TCP to `EWS_WEB_PORT` | eth0 | Legitimate access to the Web UI |
+| ARP (request/reply) | eth0 | Address resolution required for any IP communication, including access to the Web UI |
+| Traffic not directed to EWS | eth0 | Only packets with honeypot dst_ip or dst_mac are analyzed |
 
-### Deduplicazione
+### Deduplication
 
-Gli eventi duplicati (stessa `dedup_key`) vengono aggregati entro una finestra temporale configurabile, incrementando il contatore `occurrences`.
+Duplicate events (same `dedup_key`) are aggregated within a configurable time window, incrementing the `occurrences` counter.
 
 ### Rate limiting
 
-Un limite configurabile (default: 100 eventi/sec) previene il flooding del database in caso di attacchi volumetrici.
+A configurable limit (default: 100 events/sec) prevents database flooding in case of volumetric attacks.
 
 ---
 
-## API REST
+## REST API
 
-Tutti gli endpoint GET sono accessibili senza autenticazione.  
-Gli endpoint mutabili (POST) richiedono l'header `X-Api-Key` **se** la variabile `EWS_API_KEY` è configurata.
+All GET endpoints are accessible without authentication.  
+Mutable endpoints (POST) require the `X-Api-Key` header **if** the `EWS_API_KEY` variable is configured.
 
-| Metodo | Endpoint | Auth | Descrizione |
+| Method | Endpoint | Auth | Description |
 |---|---|---|---|
-| `GET` | `/health` | — | Healthcheck container |
-| `GET` | `/api/status` | — | Stato sistema, modalità, interfacce |
-| `GET` | `/api/metrics` | — | Metriche per protocollo (pacchetti, PPS, BPS) |
-| `GET` | `/api/events` | — | Lista eventi con filtri (severity/protocol/host/time) |
-| `GET` | `/api/config` | — | Configurazione runtime |
+| `GET` | `/health` | — | Container healthcheck |
+| `GET` | `/api/status` | — | System status, mode, interfaces |
+| `GET` | `/api/metrics` | — | Per-protocol metrics (packets, PPS, BPS) |
+| `GET` | `/api/events` | — | Event list with filters (severity/protocol/host/time) |
+| `GET` | `/api/config` | — | Runtime configuration |
 | `POST` | `/api/state` | `X-Api-Key` | Switch OFF ↔ ON |
-| `POST` | `/api/config` | `X-Api-Key` | Modifica dedup window runtime |
+| `POST` | `/api/config` | `X-Api-Key` | Change dedup window at runtime |
 | `POST` | `/api/baseline/export` | — | Export baseline JSON |
 | `POST` | `/api/baseline/import` | `X-Api-Key` | Import baseline JSON |
-| `POST` | `/api/events/emit-test` | — | Genera evento di test |
-| `POST` | `/api/events/clear` | `X-Api-Key` | Cancella tutti gli eventi WARNING e ALARM |
+| `POST` | `/api/events/emit-test` | — | Generate a test event |
+| `POST` | `/api/events/clear` | `X-Api-Key` | Clear all WARNING and ALARM events |
 
 ---
 
 ## Web UI
 
-Accessibile via HTTP su `http://<IP_eth0>:<EWS_WEB_PORT>/`.
+Accessible via HTTP at `http://<IP_eth0>:<EWS_WEB_PORT>/`.
 
-| Sezione | Contenuto |
+| Section | Content |
 |---|---|
-| **Dashboard** | 15 card protocollo con colore stato (grigio/verde/giallo/rosso), PPS, BPS, indirizzi rilevati, ultimi eventi. Barra statistiche riepilogativa. Pulsante per cancellare tutti gli eventi. |
-| **Eventi** | Tabella filtrabile per severity, protocollo, host, finestra temporale. Righe ALARM evidenziate. |
-| **Stato** | Toggle OFF/ON, lista protocolli baseline |
-| **Configurazione** | Dedup window, export/import baseline JSON |
+| **Dashboard** | 15 protocol cards with a status color (gray/green/yellow/red), PPS, BPS, observed addresses, latest events. Summary stats bar. Button to clear all events. |
+| **Events** | Filterable table by severity, protocol, host, time window. ALARM rows highlighted. |
+| **State** | OFF/ON toggle, baseline protocol list |
+| **Configuration** | Dedup window, baseline JSON export/import |
 
-### Alert sonori
+### Sound alerts
 
-La Web UI riproduce automaticamente suoni di allerta quando il sistema è in stato **ON**:
+The Web UI automatically plays alert sounds when the system is in **ON** state:
 
-| Severity | File audio | Comportamento |
+| Severity | Audio file | Behavior |
 |---|---|---|
-| **WARNING** | `warning.mp3` | Riprodotto alla comparsa di nuovi WARNING |
-| **ALARM** | `allarm.mp3` | Riprodotto con priorità superiore, interrompe il suono WARNING |
+| **WARNING** | `warning.mp3` | Played when new WARNING events appear |
+| **ALARM** | `allarm.mp3` | Played with higher priority, interrupts the WARNING sound |
 
-I suoni vengono verificati ogni 15 secondi tramite polling degli eventi recenti. Al primo caricamento della pagina i suoni non vengono riprodotti (evita allarmi per eventi preesistenti).
+Sounds are checked every 15 seconds by polling recent events. On the first page load, sounds are not played (to avoid alerting on pre-existing events).
 
-### Altre caratteristiche UI
+### Other UI characteristics
 
-- Campo **API Key** integrato nell'header con persistenza in `localStorage` per autenticazione trasparente
-- Aggiornamento live via polling REST (5s metriche, 7s eventi)
-- Tutte le renderizzazioni usano escaping XSS (`textContent` / funzione `esc()`)
+- **API Key** field integrated in the header with `localStorage` persistence for seamless authentication
+- Live updates via REST polling (5s metrics, 7s events)
+- All renderings use XSS escaping (`textContent` / `esc()` function)
 
 ---
 
 ## Deploy
 
-### Prerequisiti
+### Prerequisites
 
 - Docker + Docker Compose
-- Interfaccia di rete per management (e opzionalmente una per SPAN mirror)
+- A network interface for management (and optionally one for SPAN mirroring)
 
 ### 1. Full mode (eth0 + eth1)
 
-Il full mode utilizza `network_mode: host` con `privileged: true` per avere accesso diretto a tutte le interfacce di rete dell'host.
+Full mode uses `network_mode: host` with `privileged: true` to get direct access to all host network interfaces.
 
-Creare `.env`:
+Create `.env`:
 
 ```env
-# Interfacce di rete
+# Network interfaces
 EWS_ETH0_IFACE=eth0
 EWS_ETH1_IFACE=eth1
 
@@ -254,36 +254,36 @@ EWS_WEB_PORT=8080
 # Detection
 EWS_DEDUP_WINDOW_SECONDS=30
 
-# Sicurezza (consigliato)
+# Security (recommended)
 EWS_API_KEY=una-chiave-segreta-lunga
 
-# Alerting esterno (opzionale)
+# External alerting (optional)
 EWS_WEBHOOK_URL=https://siem.azienda.it/webhook/ews
 
 # Port scan detection
 EWS_SCAN_THRESHOLD_PORTS=5
 EWS_SCAN_THRESHOLD_SECONDS=60
 
-# Rate limiting eventi
+# Event rate limiting
 EWS_EVENT_RATE_LIMIT=100
 ```
 
-Avvio:
+Start:
 
 ```bash
 docker compose -f docker-compose.full.yml up -d --build
 ```
 
-Requisiti: `privileged: true` (accesso raw socket + promiscuous mode su entrambe le interfacce).
+Requirements: `privileged: true` (raw socket access + promiscuous mode on both interfaces).
 
-### 2. Light mode (solo eth0)
+### 2. Light mode (eth0 only)
 
-Il light mode utilizza rete **macvlan** per assegnare all'honeypot un IP/MAC dedicato sulla rete OT, rendendolo indistinguibile da un asset fisico reale.
+Light mode uses a **macvlan** network to assign the honeypot a dedicated IP/MAC on the OT network, making it indistinguishable from a real physical asset.
 
 `.env`:
 
 ```env
-# Rete macvlan
+# macvlan network
 EWS_ETH0_IP=192.168.10.250
 OT_MGMT_PARENT_IFACE=eth0
 OT_MGMT_SUBNET=192.168.10.0/24
@@ -295,64 +295,64 @@ EWS_WEB_PORT=8080
 # Detection
 EWS_DEDUP_WINDOW_SECONDS=30
 
-# Sicurezza (consigliato)
+# Security (recommended)
 EWS_API_KEY=una-chiave-segreta-lunga
 
-# Alerting esterno (opzionale)
+# External alerting (optional)
 EWS_WEBHOOK_URL=https://siem.azienda.it/webhook/ews
 
 # Port scan detection
 EWS_SCAN_THRESHOLD_PORTS=5
 EWS_SCAN_THRESHOLD_SECONDS=60
 
-# Rate limiting eventi
+# Event rate limiting
 EWS_EVENT_RATE_LIMIT=100
 ```
 
-Avvio:
+Start:
 
 ```bash
 docker compose -f docker-compose.light.yml up -d --build
 ```
 
-Capability richieste: `NET_RAW`.
+Required capability: `NET_RAW`.
 
 ---
 
-## Configurazione
+## Configuration
 
-### Variabili d'ambiente
+### Environment variables
 
-| Variabile | Default | Descrizione |
+| Variable | Default | Description |
 |---|---|---|
-| `EWS_MODE` | `full` | Modalità: `full` o `light` |
-| `EWS_WEB_HOST` | `0.0.0.0` | Bind address Web UI |
-| `EWS_WEB_PORT` | `8080` | Porta Web UI e API |
-| `EWS_ETH0_IFACE` | `eth0` | Interfaccia management/honeypot |
-| `EWS_ETH1_IFACE` | `eth1` | Interfaccia SPAN mirror |
-| `EWS_DATA_DIR` | `/data` | Directory persistenza SQLite |
-| `EWS_DEDUP_WINDOW_SECONDS` | `30` | Finestra deduplicazione eventi (1–3600) |
-| `EWS_EVENTS_RETENTION_DAYS` | `30` | Retention eventi in giorni |
-| `EWS_RECENT_WINDOW_SECONDS` | `600` | Finestra per severity colore card |
-| `EWS_API_KEY` | *(vuoto)* | API key per endpoint mutabili. Se vuoto, autenticazione disattivata |
-| `EWS_WEBHOOK_URL` | *(vuoto)* | URL webhook per alert ALARM (POST JSON) |
-| `EWS_SCAN_THRESHOLD_PORTS` | `5` | Porte distinte per triggerare ALARM port scan |
-| `EWS_SCAN_THRESHOLD_SECONDS` | `60` | Finestra temporale port scan detection |
-| `EWS_EVENT_RATE_LIMIT` | `100` | Max eventi registrati al secondo (0 = illimitato) |
+| `EWS_MODE` | `full` | Mode: `full` or `light` |
+| `EWS_WEB_HOST` | `0.0.0.0` | Web UI bind address |
+| `EWS_WEB_PORT` | `8080` | Web UI and API port |
+| `EWS_ETH0_IFACE` | `eth0` | Management/honeypot interface |
+| `EWS_ETH1_IFACE` | `eth1` | SPAN mirror interface |
+| `EWS_DATA_DIR` | `/data` | SQLite persistence directory |
+| `EWS_DEDUP_WINDOW_SECONDS` | `30` | Event deduplication window (1–3600) |
+| `EWS_EVENTS_RETENTION_DAYS` | `30` | Event retention in days |
+| `EWS_RECENT_WINDOW_SECONDS` | `600` | Window used for card severity color |
+| `EWS_API_KEY` | *(empty)* | API key for mutable endpoints. If empty, authentication is disabled |
+| `EWS_WEBHOOK_URL` | *(empty)* | Webhook URL for ALARM alerts (JSON POST) |
+| `EWS_SCAN_THRESHOLD_PORTS` | `5` | Distinct ports required to trigger ALARM port scan |
+| `EWS_SCAN_THRESHOLD_SECONDS` | `60` | Time window for port scan detection |
+| `EWS_EVENT_RATE_LIMIT` | `100` | Max events recorded per second (0 = unlimited) |
 
-### Persistenza
+### Persistence
 
-Volume obbligatorio: `./data:/data`
+Required volume: `./data:/data`
 
-Il file `/data/ews.db` contiene:
-- Stato macchina (OFF/ON)
-- Baseline: protocolli, host, indicatori, mapping ARP
-- Eventi WARNING/ALARM con occorrenze
-- Statistiche aggregate per protocollo
+The `/data/ews.db` file contains:
+- State machine (OFF/ON)
+- Baseline: protocols, hosts, indicators, ARP mappings
+- WARNING/ALARM events with occurrences
+- Per-protocol aggregated statistics
 
 ### Webhook
 
-Quando `EWS_WEBHOOK_URL` è configurato, ogni evento di severity **ALARM** genera un POST JSON:
+When `EWS_WEBHOOK_URL` is configured, each **ALARM** severity event generates a JSON POST:
 
 ```json
 {
@@ -368,62 +368,62 @@ Quando `EWS_WEBHOOK_URL` è configurato, ogni evento di severity **ALARM** gener
 }
 ```
 
-Compatibile con SIEM, Slack, Microsoft Teams, o qualsiasi endpoint HTTP.
+Compatible with SIEMs, Slack, Microsoft Teams, or any HTTP endpoint.
 
 ---
 
-## Sicurezza
+## Security
 
-| Misura | Stato |
+| Measure | Status |
 |---|---|
-| API key su endpoint mutabili | Attiva se `EWS_API_KEY` è configurato |
-| Protezione XSS nella dashboard | Tutti i dati renderizzati con escaping |
-| Rate limiting eventi | Configurabile, default 100/sec |
-| ARP spoofing detection | Confronto IP↔MAC vs baseline (eth1) |
-| Gateway Discovery detection | Pacchetti con MAC locale ma IP diverso (eth0) |
-| Port scan detection | Correlazione porte distinte per IP |
-| Esclusione Web UI e ARP su eth0 | Nessun falso positivo per accesso legittimo alla dashboard |
+| API key on mutable endpoints | Enabled if `EWS_API_KEY` is configured |
+| XSS protection in the dashboard | All rendered data is escaped |
+| Event rate limiting | Configurable, default 100/sec |
+| ARP spoofing detection | Compare IP↔MAC vs baseline (eth1) |
+| Gateway discovery detection | Packets with local MAC but different IP (eth0) |
+| Port scan detection | Correlate distinct ports per IP |
+| Web UI + ARP exclusion on eth0 | No false positives for legitimate dashboard access |
 
-### Raccomandazioni operative
+### Operational recommendations
 
-- **Configurare sempre `EWS_API_KEY`** in produzione
-- **Non esporre la Web UI su reti non fidate** — usarla solo su rete OT isolata o dietro VPN
-- **Terminare TLS esternamente** (reverse proxy nginx/traefik) se necessario
-- **Non collegare eth1 a reti non-mirror** — lo sniffing è progettato per porte SPAN
+- **Always configure `EWS_API_KEY`** in production
+- **Do not expose the Web UI on untrusted networks** — use it only on an isolated OT network or behind a VPN
+- **Terminate TLS externally** (nginx/traefik reverse proxy) if needed
+- **Do not connect eth1 to non-mirror networks** — sniffing is designed for SPAN ports
 
-### Honeypot trap
+### Honeypot traps
 
-L'honeypot apre listener su tutte le porte OT principali:
+The honeypot opens listeners on all major OT ports:
 
-**Porte TCP:** 102 (S7comm/IEC 61850), 502 (Modbus), 4840 (OPC UA), 4843 (OPC UA TLS), 9600 (FINS), 20000 (DNP3), 44818 (EtherNet/IP)
+**TCP ports:** 102 (S7comm/IEC 61850), 502 (Modbus), 4840 (OPC UA), 4843 (OPC UA TLS), 9600 (FINS), 20000 (DNP3), 44818 (EtherNet/IP)
 
-**Porte UDP:** 2222 (EtherNet/IP implicit), 9600 (FINS), 20000 (DNP3), 44818 (EtherNet/IP), 47808 (BACnet/IP)
+**UDP ports:** 2222 (EtherNet/IP implicit), 9600 (FINS), 20000 (DNP3), 44818 (EtherNet/IP), 47808 (BACnet/IP)
 
-Per ogni connessione:
-1. **WARNING** al tentativo di connessione TCP o ricezione datagram UDP
-2. **ALARM** se vengono inviati dati applicativi (con log dei primi 128 byte hex)
-3. Risposta fake minimale (Modbus error, TPKT/COTP CC, EtherNet/IP ListIdentity) per prolungare l'interazione e raccogliere più informazioni sull'attaccante
-4. Analisi payload Modbus (unit ID e function code) per maggior dettaglio negli eventi
+For each connection:
+1. **WARNING** on TCP connection attempt or UDP datagram reception
+2. **ALARM** if application data is sent (logging the first 128 bytes in hex)
+3. Minimal fake response (Modbus error, TPKT/COTP CC, EtherNet/IP ListIdentity) to prolong interaction and collect more information about the attacker
+4. Modbus payload analysis (unit ID and function code) to add more detail to events
 
 ---
 
-## Struttura repository
+## Repository structure
 
 ```
 EWS_Honeypot_OT/
 ├── app/
-│   ├── config.py          # Configurazione da variabili d'ambiente
-│   ├── parser.py          # Parser Ethernet: VLAN, IPv4/v6, ARP, TCP/UDP/ICMP
-│   ├── protocols.py       # Classificazione 15 protocolli OT (L2 + L4)
+│   ├── config.py          # Configuration from environment variables
+│   ├── parser.py          # Ethernet parser: VLAN, IPv4/v6, ARP, TCP/UDP/ICMP
+│   ├── protocols.py       # Classification of 15 OT protocols (L2 + L4)
 │   ├── sniffer.py         # Raw socket sniffer thread (AF_PACKET, promiscuous)
-│   ├── honeypot.py        # TCP/UDP trap con fake responses
+│   ├── honeypot.py        # TCP/UDP traps with fake responses
 │   ├── storage.py         # SQLite (WAL mode) + rate limiter + scan detector + ARP cache
 │   └── main.py            # FastAPI app, detection engine, webhook
 ├── static/
-│   └── index.html         # Dashboard SPA (vanilla JS, XSS-safe, alert sonori)
+│   └── index.html         # Dashboard SPA (vanilla JS, XSS-safe, sound alerts)
 ├── sound/
-│   ├── warning.mp3        # Suono alert per eventi WARNING
-│   └── allarm.mp3         # Suono alert per eventi ALARM
+│   ├── warning.mp3        # Alert sound for WARNING events
+│   └── allarm.mp3         # Alert sound for ALARM events
 ├── Dockerfile
 ├── docker-compose.full.yml   # Deploy full mode (host networking + privileged)
 ├── docker-compose.light.yml  # Deploy light mode (macvlan networking)
@@ -433,13 +433,13 @@ EWS_Honeypot_OT/
 
 ---
 
-## Stack tecnologico
+## Technology stack
 
-| Componente | Tecnologia |
+| Component | Technology |
 |---|---|
 | Runtime | Python 3.12 |
 | Web framework | FastAPI + Uvicorn |
 | Database | SQLite (WAL mode) |
 | Packet capture | `AF_PACKET` raw socket (Linux) |
-| Container | Docker con macvlan networking |
-| Frontend | Vanilla HTML/JS (zero dipendenze) |
+| Container | Docker with macvlan networking |
+| Frontend | Vanilla HTML/JS (zero dependencies) |
